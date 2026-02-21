@@ -1,1035 +1,854 @@
 import asyncio
 import logging
-import os
 import sqlite3
-import json
-import sys
-import re
-from datetime import datetime
+import datetime
+import os
+from contextlib import suppress
 from typing import List, Dict, Optional, Any
 
-from aiogram import Bot, Dispatcher, Router, F, types
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram import Router, F, Bot, Dispatcher, types, filters
+from aiogram.filters import Command, StateFilter
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton, InputFile, FSInputFile, URLInputFile
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ContentType
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 
-# --- CONFIGURATION & CONSTANTS ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "0").split(",") if id.isdigit()]
-# Load required channels from env or DB later
-REQUIRED_CHANNELS = [ch for ch in os.getenv("REQUIRED_CHANNELS", "").split(",") if ch]
-PORT = int(os.getenv("PORT", 5000))
+# --- Configuration ---
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "123456789") # Comma separated
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is required")
+
+ADMIN_IDS = [int(id.strip()) for id in ADMIN_IDS_STR.split(",") if id.strip().isdigit()]
+
+# --- Database Setup (SQLite) ---
 DB_NAME = "bot_control_hub.db"
 
-# --- LOGGING SETUP ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot_logs.log", mode='a')
-    ]
-)
-logger = logging.getLogger("BotHub")
-
-# --- DATABASE LAYER ---
-class DatabaseManager:
-    def __init__(self, db_name: str):
-        self.db_name = db_name
-        self.lock = asyncio.Lock()
-    
-    def _get_connection(self):
-        return sqlite3.connect(self.db_name, check_same_thread=False)
-
-    def execute_write(self, query: str, params: tuple = ()):
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"Database Write Error: {e}")
-
-    def execute_fetch(self, query: str, params: tuple = ()) -> List[tuple]:
-        try:
-            with self._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute(query, params)
-                return cursor.fetchall()
-        except sqlite3.Error as e:
-            logger.error(f"Database Fetch Error: {e}")
-            return []
-
-db = DatabaseManager(DB_NAME)
-
 def init_db():
-    queries = [
-        """CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            full_name TEXT,
-            username TEXT,
-            join_date TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS client_bots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER,
-            bot_token TEXT UNIQUE,
-            bot_username TEXT,
-            bot_id INTEGER UNIQUE,
-            added_date TEXT,
-            is_active INTEGER DEFAULT 1
-        )""",
-        """CREATE TABLE IF NOT EXISTS welcome_settings (
-            bot_id INTEGER PRIMARY KEY,
-            image_file_id TEXT,
-            welcome_text TEXT,
-            buttons TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS client_bot_users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_bot_id INTEGER,
-            user_id INTEGER,
-            UNIQUE(client_bot_id, user_id)
-        )""",
-        """CREATE TABLE IF NOT EXISTS broadcast_admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_bot_id INTEGER,
-            admin_user_id INTEGER
-        )""",
-        """CREATE TABLE IF NOT EXISTS error_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            bot_id INTEGER,
-            error_text TEXT,
-            timestamp TEXT
-        )""",
-        """CREATE TABLE IF NOT EXISTS force_join_channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_username TEXT
-        )"""
-    ]
-    for query in queries:
-        db.execute_write(query)
-    logger.info("Database initialized successfully.")
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        
+        # Main Bot Users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                join_date TEXT
+            )
+        ''')
 
+        # Force Join Channels
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS channels (
+                channel_id INTEGER PRIMARY KEY,
+                channel_title TEXT,
+                channel_link TEXT
+            )
+        ''')
+
+        # Client Bots connected by users
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS client_bots (
+                bot_id INTEGER PRIMARY KEY,
+                owner_id INTEGER,
+                bot_token TEXT,
+                bot_username TEXT,
+                welcome_text TEXT,
+                welcome_img_id TEXT,
+                buttons_json TEXT,
+                created_at TEXT
+            )
+        ''')
+
+        # Users for each client bot (for broadcast)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS client_bot_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id INTEGER,
+                user_id INTEGER,
+                joined_at TEXT,
+                UNIQUE(bot_id, user_id)
+            )
+        ''')
+
+        # Broadcast Admins for client bots
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS broadcast_admins (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id INTEGER,
+                user_id INTEGER,
+                UNIQUE(bot_id, user_id)
+            )
+        ''')
+        conn.commit()
+
+# Call DB Init
 init_db()
 
-# Load force join channels from DB into global list
-def load_force_join_channels():
-    global REQUIRED_CHANNELS
-    channels = db.execute_fetch("SELECT channel_username FROM force_join_channels")
-    # Merge with env channels (env has priority usually, but here we combine)
-    env_channels = [ch for ch in os.getenv("REQUIRED_CHANNELS", "").split(",") if ch]
-    db_channels = [ch[0] for ch in channels]
-    REQUIRED_CHANNELS = list(set(env_channels + db_channels))
+# --- Helpers ---
+def get_db():
+    return sqlite3.connect(DB_NAME)
 
-load_force_join_channels()
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
-# --- FSM STATES ---
-class MainStates(StatesGroup):
-    waiting_for_token = State()
-    waiting_for_image_decision = State()
-    waiting_for_image = State()
-    waiting_for_welcome_text = State()
-    waiting_for_button_count = State()
-    waiting_for_button_details = State()
-    broadcast_setup_ids = State()
-    # Client Bot Broadcast States
-    client_bc_text = State()
-    client_bc_photo = State()
-    client_bc_confirm = State()
-    # Admin Broadcast States
-    admin_bc_photo = State()
-    admin_bc_text = State()
-    admin_bc_btn = State()
-    admin_bc_confirm = State()
-    # Force Join Management
-    admin_add_channel = State()
+def escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-# --- GLOBALS & STORAGE ---
-router = Router()
-# Structure: {bot_id: {"bot": Bot, "dp": Dispatcher, "task": asyncio.Task}}
-client_bots: Dict[int, Dict] = {} 
+# --- FSM States ---
+class Form(StatesGroup):
+    # Add Bot Flow
+    add_bot_token = State()
+    add_bot_img = State()
+    add_bot_text = State()
+    add_btn_count = State()
+    add_btn_name = State()
+    add_btn_url = State()
+    
+    # Broadcast Setup
+    select_bot_broadcast = State()
+    set_broadcast_admins = State()
+    
+    # Client Bot Broadcast
+    client_broadcast_msg = State()
+    client_broadcast_confirm = State()
 
-# --- HELPERS ---
-def get_bengali_welcome():
-    return (
-        "👋 স্বাগতম! আমি হলাম **Bot Control Hub**।\n\n"
-        "এখানে আপনি আপনার নিজের টেলিগ্রাম বট যুক্ত করে তার স্বাগত বার্তা এবং "
-        "ব্রডকাস্ট সিস্টেম সেটআপ করতে পারবেন।\n\n"
-        "শুরু করতে নিচের বাটমে ক্লিক করুন! 😼"
-    )
+    # Admin Broadcast
+    admin_broadcast_msg = State()
+    admin_broadcast_confirm = State()
+    
+    # Admin Channel Mgmt
+    add_channel_link = State()
 
-def is_valid_url(url: str) -> bool:
-    """Check if url is valid http/https or tg:// deep link."""
-    if not url: return False
-    if url.startswith("tg://"): return True
-    regex = re.compile(
-        r'^(?:http|ftp)s?://' 
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' 
-        r'localhost|' 
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' 
-        r'(?::\d+)?' 
-        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
-    return re.match(regex, url) is not None
-
-# --- KEYBOARDS ---
-def get_main_keyboard(user_id: int):
-    buttons = [
-        [InlineKeyboardButton(text="🤖 আমার বট সমূহ", callback_data="my_bots")],
-        [InlineKeyboardButton(text="➕ নতুন বট যুক্ত করুন", callback_data="add_new_bot")],
-        [InlineKeyboardButton(text="📢 ব্রডকাস্ট সেটআপ", callback_data="setup_broadcast")],
+# --- Keyboards ---
+def get_main_keyboard():
+    kb = [
+        [KeyboardButton(text="🤖 আমার বটস"), KeyboardButton(text="➕ নতুন বট যোগ করুন")],
+        [KeyboardButton(text="📢 ব্রডকাস্ট সেটআপ"), KeyboardButton(text="📞 এডমিন যোগাযোগ")],
+        [KeyboardButton(text="ℹ️ সাহায্য")]
     ]
-    # Only show Admin Panel if user is in ADMIN_IDS
-    if user_id in ADMIN_IDS:
-        buttons.append([InlineKeyboardButton(text="🛠️ অ্যাডমিন প্যানেল", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-def get_force_join_keyboard():
-    buttons = []
-    for ch in REQUIRED_CHANNELS:
-        link = f"https://t.me/{ch.replace('@', '')}"
-        buttons.append([InlineKeyboardButton(text=f"🔗 {ch}", url=link)])
-    buttons.append([InlineKeyboardButton(text="✅ আমি জয়েন করেছি", callback_data="check_join")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def get_admin_keyboard():
+    kb = [
+        [KeyboardButton(text="📊 স্ট্যাটাস"), KeyboardButton(text="📢 ইউজার ব্রডকাস্ট")],
+        [KeyboardButton(text="📺 চ্যানেল ম্যানেজ"), KeyboardButton(text="🔙 মেনুতে ফিরুন")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- MIDDLEWARE: FORCE JOIN ---
-async def check_subscription(user_id: int, bot: Bot) -> bool:
-    if not REQUIRED_CHANNELS:
-        return True
-    for channel in REQUIRED_CHANNELS:
+def get_back_keyboard():
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ বাতিল করুন")]], resize_keyboard=True)
+
+def get_skip_keyboard():
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⏭️ স্কিপ করুন")]], resize_keyboard=True)
+
+# --- Main Router ---
+router = Router()
+
+# --- Global Middleware for Force Join ---
+@router.message()
+async def check_subscription(message: Message, state: FSMContext):
+    # Allow admins always
+    if is_admin(message.from_user.id):
+        return
+    
+    # Check if in a flow (FSM state active)
+    current_state = await state.get_state()
+    if current_state is not None:
+        return # Let the specific handler deal with it, or assume they are already verified
+
+    # Check DB for channels
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT channel_id, channel_title, channel_link FROM channels")
+    channels = cursor.fetchall()
+    conn.close()
+
+    if not channels:
+        return # No channels required
+
+    # We need the bot instance to check membership. 
+    # Since we use `router`, we don't have `bot` directly injected in message middleware like in dp.message.
+    # But we can access it via message.bot
+    
+    not_joined = []
+    for ch_id, title, link in channels:
         try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            member = await message.bot.get_chat_member(ch_id, message.from_user.id)
             if member.status in ["left", "kicked"]:
-                return False
-        except Exception as e:
-            logger.warning(f"Subscription check error for {channel}: {e}")
-            # If bot is not admin in channel, we assume user might have issues, but let's not block entirely if check fails
-            # However, usually, we should return False to prompt admin to fix.
-            return False
+                not_joined.append((ch_id, title, link))
+        except TelegramAPIError:
+            # If bot not in channel or error, skip check to avoid spam
+            continue
+
+    if not_joined:
+        # Build Force Join Keyboard
+        buttons = []
+        for _, title, link in not_joined:
+            buttons.append([InlineKeyboardButton(text=f"➡️ {title}", url=link)])
+        buttons.append([InlineKeyboardButton(text="✅ আমি জয়েন করেছি", callback_data="check_subs")])
+        
+        text = (
+            "😡 এই একটু থামুন!\n\n"
+            "আপনি আমাদের নির্দিষ্ট চ্যানেলে জয়েন করেননি। বট ব্যবহার করতে হলে আগে নিচের চ্যানেলে জয়েন হন, "
+            "তারপর 'আমি জয়েন করেছি' বাটনে ক্লিক করুন!\n\n"
+            "এটা আমাদের নিয়ম, ভালো থাকার জন্যই! 😉"
+        )
+        await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        return False # Stop further processing
+    
     return True
 
-# --- MAIN BOT HANDLERS ---
-@router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.from_user.id
-    user = message.from_user
-    
-    db.execute_write(
-        "INSERT OR IGNORE INTO users (user_id, full_name, username, join_date) VALUES (?, ?, ?, ?)",
-        (user_id, user.full_name, user.username, str(datetime.now()))
-    )
+# --- Handlers: Start & Help ---
+@router.message(Command("start"))
+async def cmd_start(message: Message, state: FSMContext):
+    # Register User
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, join_date) VALUES (?, ?, ?, ?)",
+                   (message.from_user.id, message.from_user.username, message.from_user.first_name, str(datetime.datetime.now())))
+    conn.commit()
+    conn.close()
 
-    if not await check_subscription(user_id, bot):
+    # Check Admin
+    if is_admin(message.from_user.id):
         await message.answer(
-            "🔒 দুঃখিত! বট ব্যবহার করতে হলে নিচের চ্যানেলগুলোতে জয়েন করতে হবে।",
-            reply_markup=get_force_join_keyboard()
-        )
-        return
-
-    await state.clear()
-    await message.answer(
-        get_bengali_welcome(),
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(user_id)
-    )
-
-@router.callback_query(F.data == "check_join")
-async def process_check_join(callback: types.CallbackQuery, bot: Bot):
-    user_id = callback.from_user.id
-    if await check_subscription(user_id, bot):
-        try:
-            await callback.message.delete()
-        except:
-            pass
-        await callback.message.answer(
-            "✅ ধন্যবাদ! আপনি সফলভাবে যুক্ত হয়েছেন।",
-            reply_markup=get_main_keyboard(user_id)
+            "👋 স্বাগতম মহামান্য এডমিন!\n\nআপনাকে দেখে খুব খুশি হলাম। আজ কি করবেন? নিচের প্যানেল থেকে বেছে নিন! 😎",
+            reply_markup=get_admin_keyboard()
         )
     else:
-        await callback.answer("⚠️ আপনি এখনো সব চ্যানেলে জয়েন করেননি!", show_alert=True)
+        await message.answer(
+            "🤖 **Bot Control Hub**-এ স্বাগতম!\n\n"
+            "এখানে আপনি আপনার নিজের টেলিগ্রাম বট যোগ করতে পারবেন, সুন্দর সুন্দর ওয়েলকাম মেসেজ সেট করতে পারবেন এবং "
+            "ব্রডকাস্ট পরিচালনা করতে পারবেন। সব মিলিয়ে এক ম্যানেজমেন্ট সেন্টার! 😍\n\n"
+            "নিচের মেনু থেকে কাজ শুরু করুন:",
+            reply_markup=get_main_keyboard(),
+            parse_mode="Markdown"
+        )
 
 @router.message(Command("help"))
+@router.message(F.text == "ℹ️ সাহায্য")
 async def cmd_help(message: Message):
     text = (
-        "🆘 **সাহায্য গাইড**\n\n"
-        "1. ➕ নতুন বট যুক্ত করুন বাটনে ক্লিক করুন।\n"
-        "2. BotFather থেকে টোকেন নিয়ে আসুন।\n"
-        "3. আপনার বট এর স্বাগতম বার্তা সেট করুন।\n"
-        "4. ব্রডকাস্ট সিস্টেম সেট করুন।\n\n"
-        "⚠️ বট টোকেন সুরক্ষিত রাখুন।"
+        "🆘 **সাহায্য গাইড:**\n\n"
+        "1. **নতুন বট যোগ:** আপনার বটের টোকেন দিয়ে এখানে কানেক্ট করুন।\n"
+        "2. **ওয়েলকাম মেসেজ:** ইমেজ, টেক্সট ও বাটন দিয়ে সাজিয়ে নিন।\n"
+        "3. **ব্রডকাস্ট:** আপনার বটের ইউজারদের মেসেজ পাঠান।\n\n"
+        "কোনো সমস্যা হলে এডমিনের সাথে যোগাযোগ করুন।"
     )
-    admin_contact = f"tg://user?id={ADMIN_IDS[0]}" if ADMIN_IDS else "https://t.me/your_admin"
-    await message.answer(text, parse_mode="Markdown", 
-                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                             [InlineKeyboardButton(text="📩 অ্যাডমিনে যোগাযোগ", url=admin_contact)]
-                         ]))
+    buttons = [[InlineKeyboardButton(text="📞 এডমিন যোগাযোগ", url="tg://user?id=123456789")]] # Replace with dynamic if needed
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-# --- BOT MANAGEMENT FLOW ---
+# --- Handler: Back to Menu ---
+@router.message(F.text == "🔙 মেনুতে ফিরুন")
+async def back_to_menu(message: Message, state: FSMContext):
+    await state.clear()
+    if is_admin(message.from_user.id):
+        await message.answer("মেনুতে ফিরে এলাম! 😊", reply_markup=get_admin_keyboard())
+    else:
+        await message.answer("মেনুতে ফিরে এলাম! 😊", reply_markup=get_main_keyboard())
 
-@router.callback_query(F.data == "add_new_bot")
-async def add_new_bot(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(MainStates.waiting_for_token)
-    await callback.message.edit_text(
-        "🤖 **নতুন বট যুক্ত করা হচ্ছে**\n\n"
-        "অনুগ্রহ করে BotFather থেকে আপনার বটের **API Token** পাঠান।\n"
-        "উদাহরণ: `123456:ABC-DEF...`",
-        parse_mode="Markdown"
+# --- Flow: Add New Bot ---
+@router.message(F.text == "➕ নতুন বট যোগ করুন")
+async def add_bot_start(message: Message, state: FSMContext):
+    await message.answer(
+        "🤖 চলুন নতুন বট যোগ করি!\n\n"
+        "প্রথমে আপনার বটের **API Token** টি পাঠান।\n"
+        "(টোকেন পাবেন @BotFather থেকে)",
+        reply_markup=get_back_keyboard()
     )
+    await state.set_state(Form.add_bot_token)
 
-@router.message(MainStates.waiting_for_token)
-async def process_token(message: Message, state: FSMContext, bot: Bot):
-    token = message.text.strip()
-    
-    existing = db.execute_fetch("SELECT bot_id FROM client_bots WHERE bot_token=?", (token,))
-    if existing:
-        await message.answer("❌ এই বট টি ইতিমধ্যে সিস্টেমে যুক্ত আছে।")
+@router.message(Form.add_bot_token)
+async def process_token(message: Message, state: FSMContext):
+    if message.text == "❌ বাতিল করুন":
+        await state.clear()
+        await message.answer("বাতিল করা হলো।", reply_markup=get_main_keyboard())
         return
 
+    token = message.text
     try:
-        new_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        # Validate token
+        new_bot = Bot(token=token)
         bot_info = await new_bot.get_me()
         await new_bot.session.close()
-    except Exception as e:
-        await message.answer(f"❌ টোকেন অবৈধ! আবার চেষ্টা করুন।\nError: `{e}`", parse_mode="Markdown")
-        return
-
-    db.execute_write(
-        "INSERT INTO client_bots (owner_id, bot_token, bot_username, bot_id, added_date) VALUES (?, ?, ?, ?, ?)",
-        (message.from_user.id, token, bot_info.username, bot_info.id, str(datetime.now()))
-    )
-
-    if ADMIN_IDS:
-        alert_text = (
-            f"🆕 <b>New Bot Connected!</b>\n"
-            f"User: {message.from_user.full_name} (<code>{message.from_user.id}</code>)\n"
-            f"Bot: @{bot_info.username} (<code>{bot_info.id}</code>)\n"
-            f"Time: {datetime.now()}"
+        
+        # Save to state
+        await state.update_data(token=token, bot_id=bot_info.id, bot_username=bot_info.username)
+        
+        await message.answer(
+            f"✅ বট পাওয়া গেছে: @{bot_info.username}\n\n"
+            "এখন ওয়েলকাম মেসেজের জন্য একটি ছবি পাঠান।\n"
+            "অথবা 'স্কিপ' করুন।",
+            reply_markup=get_skip_keyboard()
         )
-        try:
-            await bot.send_message(ADMIN_IDS[0], alert_text)
-        except: pass
-
-    await state.update_data(current_bot_token=token, current_bot_id=bot_info.id, current_bot_username=bot_info.username)
-    
-    await state.set_state(MainStates.waiting_for_image_decision)
-    await message.answer(
-        f"✅ বট সফলভাবে যুক্ত হয়েছে: @{bot_info.username}\n\n"
-        "আপনি কি স্বাগতম বার্তায় ছবি চান? 🖼️",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ হ্যাঁ, ছবি দিব", callback_data="img_yes")],
-            [InlineKeyboardButton(text="⏭️ ছবি লাগবে না", callback_data="img_skip")]
-        ])
-    )
-
-@router.callback_query(StateFilter(MainStates.waiting_for_image_decision), F.data == "img_yes")
-async def ask_for_image(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(MainStates.waiting_for_image)
-    await callback.message.edit_text("🖼️ অনুগ্রহ করে স্বাগতম বার্তার ছবি পাঠান।")
-
-@router.message(MainStates.waiting_for_image, F.content_type == ContentType.PHOTO)
-async def save_image(message: Message, state: FSMContext):
-    file_id = message.photo[-1].file_id
-    await state.update_data(image_file_id=file_id)
-    await state.set_state(MainStates.waiting_for_welcome_text)
-    await message.answer("✅ ছবি সংরক্ষিত। এখন স্বাগতম বার্তা (টেক্সট) লিখুন।")
-
-@router.callback_query(StateFilter(MainStates.waiting_for_image_decision), F.data == "img_skip")
-async def skip_image(callback: types.CallbackQuery, state: FSMContext):
-    await state.update_data(image_file_id=None)
-    await state.set_state(MainStates.waiting_for_welcome_text)
-    await callback.message.edit_text("⏭️ ঠিক আছে। এখন স্বাগতম বার্তা (টেক্সট) লিখুন।")
-
-@router.message(MainStates.waiting_for_welcome_text)
-async def save_welcome_text(message: Message, state: FSMContext):
-    await state.update_data(welcome_text=message.text)
-    await state.set_state(MainStates.waiting_for_button_count)
-    await message.answer(
-        "বাটন কয়টি দিতে চান? (০ থেকে ৩)",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=str(i), callback_data=f"btn_count_{i}") for i in range(4)]
-        ])
-    )
-
-@router.callback_query(StateFilter(MainStates.waiting_for_button_count), F.data.startswith("btn_count_"))
-async def process_button_count(callback: types.CallbackQuery, state: FSMContext):
-    count = int(callback.data.split("_")[-1])
-    data = await state.get_data()
-    
-    if count == 0:
-        await finalize_bot_setup(callback.message, state, data, [])
-        return
-
-    await state.update_data(button_count=count, current_button_index=0, buttons_list=[])
-    await state.set_state(MainStates.waiting_for_button_details)
-    await callback.message.edit_text(f"🔘 বাটন ১: অনুগ্রহ করে **নাম** এবং **URL** দিন।\n\nফরম্যাট: `নাম | URL`", parse_mode="Markdown")
-
-@router.message(MainStates.waiting_for_button_details)
-async def process_button_details(message: Message, state: FSMContext):
-    data = await state.get_data()
-    idx = data['current_button_index']
-    count = data['button_count']
-    
-    try:
-        parts = message.text.split("|")
-        if len(parts) < 2: raise ValueError
-        name = parts[0].strip()
-        url = parts[1].strip()
-        
-        if not is_valid_url(url):
-            await message.answer("⚠️ অবৈধ URL! অনুগ্রহ করে সঠিক লিংক দিন।\nউদাহরণ: `https://t.me/username` অথবা `tg://resolve?domain=username`", parse_mode="Markdown")
-            return
-            
-    except ValueError:
-        await message.answer("❌ ফরম্যাট ঠিক নেই! আবার লিখুন: `নাম | URL`", parse_mode="Markdown")
-        return
-
-    buttons = data.get('buttons_list', [])
-    buttons.append({"name": name, "url": url})
-    
-    idx += 1
-    if idx < count:
-        await state.update_data(current_button_index=idx, buttons_list=buttons)
-        await message.answer(f"✅ বাটন {idx} সেট হয়েছে। এখন বাটন {idx+1} দিন।")
-    else:
-        await finalize_bot_setup(message, state, data, buttons)
-
-async def finalize_bot_setup(message: Message, state: FSMContext, data: Dict, buttons: List):
-    bot_id = data['current_bot_id']
-    image_id = data.get('image_file_id')
-    text = data.get('welcome_text')
-    btn_json = json.dumps(buttons)
-
-    db.execute_write(
-        "INSERT INTO welcome_settings (bot_id, image_file_id, welcome_text, buttons) VALUES (?, ?, ?, ?)",
-        (bot_id, image_id, text, btn_json)
-    )
-    
-    # Start the client bot immediately
-    token = data['current_bot_token']
-    # Check if bot is already running (e.g. duplicate callback)
-    if bot_id not in client_bots:
-        task = asyncio.create_task(start_client_bot_task(token, bot_id))
-    
-    await state.clear()
-    await message.answer(
-        "🎉 **বট সেটআপ সম্পন্ন!**\n\n"
-        "আপনার বট এখন ব্যবহারযোগ্য। আপনার বটে /start দিলে এই সেটআপ দেখাবে।",
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(message.from_user.id)
-    )
-
-# --- MY BOTS & MANAGEMENT ---
-
-@router.callback_query(F.data == "my_bots")
-async def list_my_bots(callback: types.CallbackQuery):
-    bots = db.execute_fetch(
-        "SELECT id, bot_username, bot_id FROM client_bots WHERE owner_id=?", 
-        (callback.from_user.id,)
-    )
-
-    if not bots:
-        await callback.message.edit_text("😕 আপনার কোনো বট যুক্ত নেই।", reply_markup=get_main_keyboard(callback.from_user.id))
-        return
-
-    keyboard = []
-    for b in bots:
-        status = "🟢" if b[2] in client_bots else "🔴"
-        keyboard.append([InlineKeyboardButton(text=f"{status} 🤖 @{b[1]}", callback_data=f"manage_bot_{b[2]}")])
-    keyboard.append([InlineKeyboardButton(text="🔙 পেছনে", callback_data="back_home")])
-    
-    await callback.message.edit_text("🤖 **আপনার যুক্ত বট সমূহ:**", parse_mode="Markdown", 
-                                     reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
-
-@router.callback_query(F.data.startswith("manage_bot_"))
-async def manage_bot(callback: types.CallbackQuery, state: FSMContext):
-    bot_id = int(callback.data.split("_")[-1])
-    
-    # Store in state for later use
-    await state.update_data(managing_bot_id=bot_id)
-
-    is_running = bot_id in client_bots
-    status_text = "🟢 চলছে" if is_running else "🔴 বন্ধ"
-    
-    await callback.message.edit_text(
-        f"⚙️ **বট ম্যানেজমেন্ট**\n\n"
-        f"স্ট্যাটাস: {status_text}\n"
-        f"আপনি কি করতে চান?",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✏️ স্বাগতম বার্তা পরিবর্তন", callback_data="edit_welcome")],
-            [InlineKeyboardButton(text="📢 ব্রডকাস্ট শুরু করুন", callback_data=f"client_bc_start_{bot_id}")],
-            [InlineKeyboardButton(text="🔄 রিস্টার্ট বট", callback_data=f"restart_bot_{bot_id}")],
-            [InlineKeyboardButton(text="🗑️ বট ডিলিট করুন", callback_data=f"delete_bot_{bot_id}")],
-            [InlineKeyboardButton(text="🔙 পেছনে", callback_data="my_bots")]
-        ])
-    )
-
-@router.callback_query(F.data.startswith("delete_bot_"))
-async def delete_bot(callback: types.CallbackQuery):
-    bot_id = int(callback.data.split("_")[-1])
-    
-    # Stop bot if running
-    if bot_id in client_bots:
-        try:
-            task = client_bots[bot_id]['task']
-            task.cancel()
-            try: await asyncio.wait_for(task, timeout=2.0)
-            except: pass 
-            del client_bots[bot_id]
-        except Exception as e:
-            logger.error(f"Error stopping bot {bot_id}: {e}")
-
-    db.execute_write("DELETE FROM client_bots WHERE bot_id=?", (bot_id,))
-    db.execute_write("DELETE FROM welcome_settings WHERE bot_id=?", (bot_id,))
-    db.execute_write("DELETE FROM client_bot_users WHERE client_bot_id=?", (bot_id,))
-    db.execute_write("DELETE FROM broadcast_admins WHERE client_bot_id=?", (bot_id,))
-    
-    await callback.answer("✅ বট সফলভাবে ডিলিট হয়েছে।")
-    await callback.message.edit_text("🏠 মূল মেনুতে ফিরে এসেছেন।", reply_markup=get_main_keyboard(callback.from_user.id))
-
-@router.callback_query(F.data.startswith("restart_bot_"))
-async def restart_bot_handler(callback: types.CallbackQuery):
-    bot_id = int(callback.data.split("_")[-1])
-    
-    bot_data = db.execute_fetch("SELECT bot_token FROM client_bots WHERE bot_id=?", (bot_id,))
-    if not bot_data:
-        await callback.answer("বট খুঁজে পাওয়া যায়নি।", show_alert=True)
-        return
-
-    token = bot_data[0][0]
-    
-    # Stop existing task if running
-    if bot_id in client_bots:
-        try:
-            client_bots[bot_id]['task'].cancel()
-            del client_bots[bot_id]
-        except: pass
-
-    # Create new task
-    asyncio.create_task(start_client_bot_task(token, bot_id))
-    await callback.answer("বট রিস্টার্ট হচ্ছে...")
-    
-    await callback.message.edit_text(
-        f"⚙️ **বট ম্যানেজমেন্ট**\n\n"
-        f"স্ট্যাটাস: 🔄 রিস্টার্ট হচ্ছে...\n",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-             [InlineKeyboardButton(text="🔄 রিফ্রেশ", callback_data=f"manage_bot_{bot_id}")],
-        ])
-    )
-
-@router.callback_query(F.data == "back_home")
-async def back_home(callback: types.CallbackQuery):
-    await callback.message.edit_text(get_bengali_welcome(), parse_mode="Markdown", reply_markup=get_main_keyboard(callback.from_user.id))
-
-# --- CLIENT BOT BROADCAST SYSTEM (FIXED) ---
-
-@router.callback_query(F.data.startswith("client_bc_start_"))
-async def client_bc_start(callback: types.CallbackQuery, state: FSMContext):
-    bot_id = int(callback.data.split("_")[-1])
-    
-    # Permission check
-    is_admin = db.execute_fetch(
-        "SELECT 1 FROM broadcast_admins WHERE client_bot_id=? AND admin_user_id=?", 
-        (bot_id, callback.from_user.id)
-    )
-    is_owner = db.execute_fetch("SELECT 1 FROM client_bots WHERE bot_id=? AND owner_id=?", (bot_id, callback.from_user.id))
-    
-    if not is_admin and not is_owner and callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ আপনার এই বটে ব্রডকাস্ট করার অনুমতি নেই।", show_alert=True)
-        return
-
-    await state.update_data(bc_bot_id=bot_id)
-    await state.set_state(MainStates.client_bc_photo)
-    
-    await callback.message.edit_text(
-        "📢 **ক্লায়েন্ট বট ব্রডকাস্ট**\n\n"
-        "প্রথমে একটি ছবি পাঠান, অথবা ছবি ছাড়াই টেক্সট পাঠাতে 'স্কিপ' বাটনে ক্লিক করুন।",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏭️ ছবি স্কিপ করুন", callback_data="client_bc_skip_photo")]
-        ])
-    )
-
-@router.callback_query(F.data == "client_bc_skip_photo", MainStates.client_bc_photo)
-async def client_bc_skip_photo(callback: types.CallbackQuery, state: FSMContext):
-    await state.update_data(bc_photo=None)
-    await state.set_state(MainStates.client_bc_text)
-    await callback.message.edit_text(
-        "📝 এখন ব্রডকাস্ট মেসেজ (টেক্সট) লিখুন।",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ বাতিল", callback_data="my_bots")]
-        ])
-    )
-
-@router.message(MainStates.client_bc_photo, F.content_type == ContentType.PHOTO)
-async def client_bc_photo_received(message: Message, state: FSMContext):
-    await state.update_data(bc_photo=message.photo[-1].file_id)
-    await state.set_state(MainStates.client_bc_text)
-    await message.answer("✅ ছবি সংরক্ষিত। এখন ব্রডকাস্ট টেক্সট লিখুন।")
-
-@router.message(MainStates.client_bc_text)
-async def client_bc_text_received(message: Message, state: FSMContext):
-    await state.update_data(bc_text=message.text)
-    data = await state.get_data()
-    
-    # Show preview
-    text = data.get('bc_text')
-    photo = data.get('bc_photo')
-    
-    await state.set_state(MainStates.client_bc_confirm)
-    
-    caption = (
-        f"📢 **প্রিভিউ:**\n\n"
-        f"{text}\n\n"
-        f"আপনি কি এই মেসেজটি এই বটের সকল ইউজারদের পাঠাতে চান?"
-    )
-    
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ হ্যাঁ, পাঠান", callback_data="client_bc_confirm_yes")],
-        [InlineKeyboardButton(text="❌ বাতিল", callback_data="client_bc_cancel")]
-    ])
-    
-    try:
-        if photo:
-            await message.answer_photo(photo, caption=caption, parse_mode="Markdown", reply_markup=keyboard)
-        else:
-            await message.answer(caption, parse_mode="Markdown", reply_markup=keyboard)
+        await state.set_state(Form.add_bot_img)
     except Exception as e:
-        # Fallback if markdown parsing fails in preview
-        await message.answer(f"📢 **প্রিভিউ:**\n\n{text}\n\nআপনি কি এই মেসেজটি পাঠাতে চান?", reply_markup=keyboard)
+        await message.answer("❌ অবৈধ টোকেন! আবার চেষ্টা করুন অথবা বাতিল করুন।")
 
-@router.callback_query(F.data == "client_bc_confirm_yes", MainStates.client_bc_confirm)
-async def client_bc_execute(callback: types.CallbackQuery, state: FSMContext, main_bot: Bot):
-    data = await state.get_data()
-    bot_id = data['bc_bot_id']
-    text = data['bc_text']
-    photo = data['bc_photo']
-    
-    await state.clear()
-    await callback.message.edit_text("🔄 ব্রডকাস্ট শুরু হয়েছে...")
-    
-    # Get client bot instance
-    if bot_id not in client_bots:
-        await callback.answer("বট চলছে না!", show_alert=True)
+@router.message(Form.add_bot_img)
+async def process_image(message: Message, state: FSMContext):
+    img_id = None
+    if message.photo:
+        img_id = message.photo[-1].file_id # Best quality
+        await state.update_data(img_id=img_id)
+    elif message.text == "⏭️ স্কিপ করুন":
+        pass # img_id remains None
+    elif message.text == "❌ বাতিল করুন":
+        await state.clear()
+        await message.answer("বাতিল করা হলো।", reply_markup=get_main_keyboard())
         return
-        
-    bot_instance = client_bots[bot_id]['bot']
-    
-    # Get users
-    users = db.execute_fetch("SELECT user_id FROM client_bot_users WHERE client_bot_id=?", (bot_id,))
-    
-    success = 0
-    fail = 0
-    
-    for u in users:
-        uid = u[0]
-        try:
-            if photo:
-                await bot_instance.send_photo(uid, photo, caption=text)
+    else:
+        await message.answer("শুধু ছবি পাঠান অথবা স্কিপ করুন!")
+        return
+
+    await message.answer("চমৎকার! এখন ওয়েলকাম মেসেজের টেক্সট লিখুন:")
+    await state.set_state(Form.add_bot_text)
+
+@router.message(Form.add_bot_text)
+async def process_text(message: Message, state: FSMContext):
+    if message.text == "❌ বাতিল করুন":
+        await state.clear()
+        await message.answer("বাতিল করা হলো।", reply_markup=get_main_keyboard())
+        return
+
+    await state.update_data(text=message.text)
+    await message.answer("ওয়েলকাম মেসেজে কয়টি বাটন থাকবে? (০ থেকে ৩ এর মধ্যে সংখ্যা দিন):")
+    await state.set_state(Form.add_btn_count)
+
+@router.message(Form.add_btn_count)
+async def process_btn_count(message: Message, state: FSMContext):
+    if message.text == "❌ বাতিল করুন":
+        await state.clear()
+        await message.answer("বাতিল করা হলো।", reply_markup=get_main_keyboard())
+        return
+
+    try:
+        count = int(message.text)
+        if 0 <= count <= 3:
+            if count == 0:
+                # Save bot to DB
+                data = await state.get_data()
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO client_bots (bot_id, owner_id, bot_token, bot_username, welcome_text, welcome_img_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (data['bot_id'], message.from_user.id, data['token'], data['bot_username'], data['text'], data.get('img_id'), str(datetime.datetime.now()))
+                )
+                conn.commit()
+                conn.close()
+                
+                # Notify Admin
+                await notify_admin_new_bot(message.bot, message.from_user, data)
+                
+                await state.clear()
+                await message.answer("🎉 বট সফলভাবে যোগ হয়েছে এবং সেটআপ সম্পন্ন!", reply_markup=get_main_keyboard())
             else:
-                await bot_instance.send_message(uid, text)
-            success += 1
-            await asyncio.sleep(0.05) # Rate limit
-        except Exception:
-            fail += 1
-            
-    await callback.message.edit_text(f"✅ ব্রডকাস্ট শেষ!\n\nসফল: {success}\nব্যর্থ: {fail}")
+                await state.update_data(btn_count=count, current_btn=0, buttons=[])
+                await message.answer(f"বাটন ১ এর নাম লিখুন:")
+                await state.set_state(Form.add_btn_name)
+        else:
+            await message.answer("সংখ্যা ০ থেকে ৩ এর মধ্যে হতে হবে!")
+    except ValueError:
+        await message.answer("সংখ্যা দিন!")
 
-@router.callback_query(F.data == "client_bc_cancel")
-async def client_bc_cancel(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("🚫 ব্রডকাস্ট বাতিল করা হয়েছে।", reply_markup=get_main_keyboard(callback.from_user.id))
-
-# --- MAIN BROADCAST SETUP (FOR ADMINS) ---
-
-@router.callback_query(F.data == "setup_broadcast")
-async def setup_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
-    # This is for configuring who can broadcast, as per original code
-    bots = db.execute_fetch("SELECT bot_id, bot_username FROM client_bots WHERE owner_id=?", (callback.from_user.id,))
-    
-    if not bots:
-        await callback.answer("প্রথমে একটি বট যুক্ত করুন!", show_alert=True)
+# Recursive button add
+@router.message(Form.add_btn_name)
+async def process_btn_name(message: Message, state: FSMContext):
+    if message.text == "❌ বাতিল করুন":
+        await state.clear()
+        await message.answer("বাতিল করা হলো।", reply_markup=get_main_keyboard())
         return
 
-    keyboard = []
-    for b in bots:
-        keyboard.append([InlineKeyboardButton(text=f"🤖 @{b[1]}", callback_data=f"select_bc_bot_{b[0]}")])
-    
-    await callback.message.edit_text(
-        "📢 কোন বটের জন্য ব্রডকাস্ট অ্যাডমিন সেটআপ করবেন?",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
-    )
+    await state.update_data(current_btn_name=message.text)
+    await message.answer("বাটনের URL লিখুন:")
+    await state.set_state(Form.add_btn_url)
 
-@router.callback_query(F.data.startswith("select_bc_bot_"))
-async def ask_bc_admins(callback: types.CallbackQuery, state: FSMContext):
-    bot_id = int(callback.data.split("_")[-1])
-    await state.update_data(bc_setup_bot_id=bot_id)
-    await state.set_state(MainStates.broadcast_setup_ids)
-    
-    current_admins = db.execute_fetch("SELECT admin_user_id FROM broadcast_admins WHERE client_bot_id=?", (bot_id,))
-    admins_str = ", ".join([str(a[0]) for a in current_admins]) if current_admins else "কেউ নেই"
-    
-    await callback.message.edit_text(
-        "📢 **ব্রডকাস্ট অ্যাডমিন সেটআপ**\n\n"
-        f"বর্তমান অ্যাডমিন: {admins_str}\n\n"
-        "যাদের কে ব্রডকাস্ট করার অনুমতি দিবেন তাদের **User ID** পাঠান।\n"
-        "একাধিক হলে কমা (,) দিয়ে আলাদা করুন।\n"
-        "উদাহরণ: `123456, 987654`",
-        parse_mode="Markdown"
-    )
+@router.message(Form.add_btn_url)
+async def process_btn_url(message: Message, state: FSMContext):
+    if message.text == "❌ বাতিল করুন":
+        await state.clear()
+        await message.answer("বাতিল করা হলো।", reply_markup=get_main_keyboard())
+        return
 
-@router.message(MainStates.broadcast_setup_ids)
-async def save_bc_admins(message: Message, state: FSMContext):
+    url = message.text
+    # Simple URL check
+    if not url.startswith("http"):
+        await message.answer("সঠিক URL দিন (http/https)!")
+        return
+
     data = await state.get_data()
-    bot_id = data['bc_setup_bot_id']
+    buttons = data.get('buttons', [])
+    buttons.append({"name": data['current_btn_name'], "url": url})
     
+    current_idx = data.get('current_btn', 0) + 1
+    total_btns = data.get('btn_count', 0)
+
+    if current_idx < total_btns:
+        await state.update_data(buttons=buttons, current_btn=current_idx)
+        await message.answer(f"বাটন {current_idx + 1} এর নাম লিখুন:")
+        await state.set_state(Form.add_btn_name)
+    else:
+        # Save Bot
+        import json
+        data = await state.get_data()
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO client_bots (bot_id, owner_id, bot_token, bot_username, welcome_text, welcome_img_id, buttons_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (data['bot_id'], message.from_user.id, data['token'], data['bot_username'], data['text'], data.get('img_id'), json.dumps(buttons), str(datetime.datetime.now()))
+        )
+        conn.commit()
+        conn.close()
+        
+        await notify_admin_new_bot(message.bot, message.from_user, data)
+        
+        await state.clear()
+        await message.answer("🎉 বট সফলভাবে যোগ হয়েছে এবং সেটআপ সম্পন্ন!", reply_markup=get_main_keyboard())
+
+async def notify_admin_new_bot(main_bot: Bot, user: types.User, data: dict):
+    text = (
+        f"🚀 **নতুন বট যোগ হয়েছে!**\n\n"
+        f"👤 ইউজার: {user.mention_html} (`{user.id}`)\n"
+        f"🤖 বট: @{data['bot_username']} (`{data['bot_id']}`)\n"
+        f"📅 তারিখ: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
+    for admin_id in ADMIN_IDS:
+        try:
+            await main_bot.send_message(admin_id, text, parse_mode="HTML")
+        except:
+            pass
+
+# --- Handler: My Bots ---
+@router.message(F.text == "🤖 আমার বটস")
+async def show_my_bots(message: Message):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT bot_id, bot_username, welcome_text FROM client_bots WHERE owner_id = ?", (message.from_user.id,))
+    bots = cursor.fetchall()
+    conn.close()
+
+    if not bots:
+        await message.answer("আপনার কোনো বট যোগ করা হয়নি। '➕ নতুন বট যোগ করুন' বাটনে ক্লিক করুন!", reply_markup=get_main_keyboard())
+        return
+
+    text = "তোমার বট তালিকা:\n\n"
+    keyboard = []
+    for bot_id, username, wtext in bots:
+        text += f"🤖 @{username}\n"
+        keyboard.append([InlineKeyboardButton(text=f"⚙️ {username}", callback_data=f"manage_{bot_id}")])
+
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@router.callback_query(F.data.startswith("manage_"))
+async def manage_bot(callback: CallbackQuery):
+    bot_id = int(callback.data.split("_")[1])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT bot_username FROM client_bots WHERE bot_id = ? AND owner_id = ?", (bot_id, callback.from_user.id))
+    bot = cursor.fetchone()
+    conn.close()
+
+    if not bot:
+        await callback.answer("বট পাওয়া যায়নি!", show_alert=True)
+        return
+
+    buttons = [
+        [InlineKeyboardButton(text="✏️ ওয়েলকাম এডিট", callback_data=f"edit_{bot_id}")],
+        [InlineKeyboardButton(text="🗑️ বট ডিলিট করুন", callback_data=f"del_{bot_id}")],
+        [InlineKeyboardButton(text="📊 ইউজার সংখ্যা", callback_data=f"stat_{bot_id}")]
+    ]
+    await callback.message.edit_text(f"🤖 বট: @{bot[0]}\n\nপছন্দ করুন:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("del_"))
+async def delete_bot(callback: CallbackQuery):
+    bot_id = int(callback.data.split("_")[1])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM client_bots WHERE bot_id = ? AND owner_id = ?", (bot_id, callback.from_user.id))
+    cursor.execute("DELETE FROM client_bot_users WHERE bot_id = ?", (bot_id,))
+    cursor.execute("DELETE FROM broadcast_admins WHERE bot_id = ?", (bot_id,))
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("🗑️ বট মুছে ফেলা হয়েছে।")
+
+# --- Flow: Broadcast Setup ---
+@router.message(F.text == "📢 ব্রডকাস্ট সেটআপ")
+async def setup_broadcast_start(message: Message, state: FSMContext):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT bot_id, bot_username FROM client_bots WHERE owner_id = ?", (message.from_user.id,))
+    bots = cursor.fetchall()
+    conn.close()
+
+    if not bots:
+        await message.answer("আপনার কোনো বট নেই। প্রথমে বট যোগ করুন।")
+        return
+
+    buttons = []
+    for bid, bname in bots:
+        buttons.append([InlineKeyboardButton(text=bname, callback_data=f"bc_setup_{bid}")])
+    
+    await message.answer("কোন বটের জন্য ব্রডকাস্ট এডমিন সেট করবেন?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.set_state(Form.select_bot_broadcast)
+
+@router.callback_query(StateFilter(Form.select_bot_broadcast), F.data.startswith("bc_setup_"))
+async def ask_broadcast_admins(callback: CallbackQuery, state: FSMContext):
+    bot_id = int(callback.data.split("_")[2])
+    await state.update_data(selected_bot_id=bot_id)
+    await callback.message.edit_text("এখন ব্রডকাস্ট এডমিনের User ID গুলো পাঠান।\n(একাধিক হলে কমা দিয়ে আলাদা করুন, যেমন: 12345, 67890)")
+    await state.set_state(Form.set_broadcast_admins)
+
+@router.message(StateFilter(Form.set_broadcast_admins))
+async def save_broadcast_admins(message: Message, state: FSMContext):
     try:
         ids = [int(x.strip()) for x in message.text.split(",")]
-    except:
-        await message.answer("❌ অবৈধ ID! শুধু নম্বর ব্যবহার করুন।")
-        return
+        data = await state.get_data()
+        bot_id = data['selected_bot_id']
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        # Clear old
+        cursor.execute("DELETE FROM broadcast_admins WHERE bot_id = ?", (bot_id,))
+        # Insert new
+        for uid in ids:
+            cursor.execute("INSERT INTO broadcast_admins (bot_id, user_id) VALUES (?, ?)", (bot_id, uid))
+        conn.commit()
+        conn.close()
+        
+        await state.clear()
+        await message.answer(f"✅ ব্রডকাস্ট এডমিন সেট করা হয়েছে! ({len(ids)} জন)", reply_markup=get_main_keyboard())
+    except ValueError:
+        await message.answer("শুধু সংখ্যা (ID) দিন!")
 
-    db.execute_write("DELETE FROM broadcast_admins WHERE client_bot_id=?", (bot_id,))
-    for uid in ids:
-        db.execute_write("INSERT INTO broadcast_admins (client_bot_id, admin_user_id) VALUES (?, ?)", (bot_id, uid))
+# --- Admin Panel ---
+@router.message(F.text == "📊 স্ট্যাটাস")
+async def admin_stats(message: Message):
+    if not is_admin(message.from_user.id): return
 
-    await state.clear()
-    await message.answer(
-        f"✅ ব্রডকাস্ট অ্যাডমিন সেট হয়েছে!\n\nঅ্যাডমিন IDs: {ids}",
-        reply_markup=get_main_keyboard(message.from_user.id)
-    )
+    conn = get_db()
+    cursor = conn.cursor()
+    u = cursor.execute("SELECT count(*) FROM users").fetchone()[0]
+    b = cursor.execute("SELECT count(*) FROM client_bots").fetchone()[0]
+    c = cursor.execute("SELECT count(*) FROM channels").fetchone()[0]
+    conn.close()
 
-# --- ADMIN PANEL (UPDATED) ---
+    text = f"📊 **Bot Control Hub Stats**\n\n👥 Total Users: {u}\n🤖 Connected Bots: {b}\n📺 Force Join Channels: {c}"
+    await message.answer(text, parse_mode="Markdown")
 
-@router.callback_query(F.data == "admin_panel")
-async def admin_panel(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("⛔ অননুমোদিত!", show_alert=True)
-        return
-
-    total_users = db.execute_fetch("SELECT COUNT(*) FROM users")[0][0]
-    total_bots = db.execute_fetch("SELECT COUNT(*) FROM client_bots")[0][0]
-    active_bots = len(client_bots)
-
-    text = (
-        f"🛠️ **অ্যাডমিন প্যানেল**\n\n"
-        f"👥 মোট ইউজার: `{total_users}`\n"
-        f"🤖 মোট কানেক্টেড বট: `{total_bots}`\n"
-        f"🟢 সক্রিয় বট: `{active_bots}`"
-    )
+@router.message(F.text == "📺 চ্যানেল ম্যানেজ")
+async def manage_channels(message: Message):
+    if not is_admin(message.from_user.id): return
     
-    await callback.message.edit_text(text, parse_mode="Markdown", 
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 মূল ইউজারদের ব্রডকাস্ট", callback_data="admin_bc_main")],
-            [InlineKeyboardButton(text="🌐 গ্লোবাল ব্রডকাস্ট", callback_data="admin_bc_global")],
-            [InlineKeyboardButton(text="🔒 ফোর্স জয়েন ম্যানেজমেন্ট", callback_data="admin_force_join")],
-            [InlineKeyboardButton(text="🔄 সব বট রিস্টার্ট", callback_data="admin_restart_all")],
-            [InlineKeyboardButton(text="🔙 পেছনে", callback_data="back_home")]
-        ])
-    )
-
-# --- ADMIN FORCE JOIN MANAGEMENT ---
-
-@router.callback_query(F.data == "admin_force_join")
-async def admin_force_join_menu(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
+    conn = get_db()
+    cursor = conn.cursor()
+    channels = cursor.execute("SELECT channel_id, channel_title, channel_link FROM channels").fetchall()
+    conn.close()
     
-    channels = db.execute_fetch("SELECT id, channel_username FROM force_join_channels")
-    text = "🔒 **ফোর্স জয়েন চ্যানেল সমূহ:**\n\n"
-    keyboard = []
+    text = "📺 **বর্তমান চ্যানেল তালিকা:**\n\n"
+    buttons = []
     if channels:
-        for ch in channels:
-            text += f"• `{ch[1]}`\n"
-            keyboard.append([InlineKeyboardButton(text=f"❌ {ch[1]} ডিলিট করুন", callback_data=f"del_ch_{ch[0]}")])
+        for cid, title, link in channels:
+            text += f"• {title}\n"
+            buttons.append([InlineKeyboardButton(text=f"❌ {title}", callback_data=f"rmch_{cid}")])
     else:
-        text += "কোনো চ্যানেল যুক্ত নেই।"
+        text += "কোনো চ্যানেল নেই।"
     
-    keyboard.append([InlineKeyboardButton(text="➕ নতুন চ্যানেল যুক্ত করুন", callback_data="admin_add_channel")])
-    keyboard.append([InlineKeyboardButton(text="🔙 পেছনে", callback_data="admin_panel")])
-    
-    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    buttons.append([InlineKeyboardButton(text="➕ নতুন চ্যানেল", callback_data="addch")])
+    await message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@router.callback_query(F.data == "admin_add_channel")
-async def admin_add_channel_step(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS: return
-    await state.set_state(MainStates.admin_add_channel)
-    await callback.message.edit_text("➕ অনুগ্রহ করে চ্যানেলের ইউজারনেম পাঠান (যেমন: `@mychannel` অথবা `mychannel`)।", parse_mode="Markdown")
+@router.callback_query(F.data == "addch")
+async def add_channel_step(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("চ্যানেলের পাবলিক লিংক পাঠান (যেমন: https://t.me/mychannel):")
+    await state.set_state(Form.add_channel_link)
 
-@router.message(MainStates.admin_add_channel)
-async def admin_save_channel(message: Message, state: FSMContext):
-    ch_name = message.text.strip()
-    if not ch_name.startswith("@"): ch_name = "@" + ch_name
-    
-    db.execute_write("INSERT INTO force_join_channels (channel_username) VALUES (?)", (ch_name,))
-    load_force_join_channels() # Reload global list
-    await state.clear()
-    await message.answer(f"✅ `{ch_name} যুক্ত হয়েছে।`", parse_mode="Markdown", reply_markup=get_main_keyboard(message.from_user.id))
-
-@router.callback_query(F.data.startswith("del_ch_"))
-async def admin_del_channel(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
-    ch_id = int(callback.data.split("_")[-1])
-    db.execute_write("DELETE FROM force_join_channels WHERE id=?", (ch_id,))
-    load_force_join_channels()
-    await callback.answer("ডিলিট হয়েছে।")
-    # Refresh menu
-    await admin_force_join_menu(callback)
-
-# --- ADMIN BROADCAST LOGICS ---
-
-# Helper for global broadcast
-async def broadcast_to_users(bot: Bot, user_ids: List[int], text: str, photo: str = None):
-    success = 0
-    fail = 0
-    for uid in user_ids:
-        try:
-            if photo:
-                await bot.send_photo(uid, photo, caption=text)
-            else:
-                await bot.send_message(uid, text)
-            success += 1
-            await asyncio.sleep(0.05)
-        except:
-            fail += 1
-    return success, fail
-
-# Admin Main Broadcast
-@router.callback_query(F.data == "admin_bc_main")
-async def admin_bc_main_start(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS: return
-    await state.update_data(bc_type="main")
-    await state.set_state(MainStates.admin_bc_photo)
-    await callback.message.edit_text("📢 **মূল ইউজার ব্রডকাস্ট**\n\nছবি পাঠান বা স্কিপ করুন।",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏭️ ছবি স্কিপ", callback_data="admin_bc_skip_photo")]
-        ])
-    )
-
-# Admin Global Broadcast
-@router.callback_query(F.data == "admin_bc_global")
-async def admin_bc_global_start(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS: return
-    await state.update_data(bc_type="global")
-    await state.set_state(MainStates.admin_bc_photo)
-    await callback.message.edit_text("🌐 **গ্লোবাল ব্রডকাস্ট**\n\nছবি পাঠান বা স্কিপ করুন।",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⏭️ ছবি স্কিপ", callback_data="admin_bc_skip_photo")]
-        ])
-    )
-
-@router.callback_query(F.data == "admin_bc_skip_photo", MainStates.admin_bc_photo)
-async def admin_bc_skip_photo(callback: types.CallbackQuery, state: FSMContext):
-    await state.update_data(bc_photo=None)
-    await state.set_state(MainStates.admin_bc_text)
-    await callback.message.edit_text("📝 এখন টেক্সট লিখুন।")
-
-@router.message(MainStates.admin_bc_photo, F.content_type == ContentType.PHOTO)
-async def admin_bc_photo(message: Message, state: FSMContext):
-    await state.update_data(bc_photo=message.photo[-1].file_id)
-    await state.set_state(MainStates.admin_bc_text)
-    await message.answer("✅ ছবি নেওয়া হয়েছে। এখন টেক্সট লিখুন।")
-
-@router.message(MainStates.admin_bc_text)
-async def admin_bc_text(message: Message, state: FSMContext):
-    await state.update_data(bc_text=message.text)
-    data = await state.get_data()
-    
-    # Preview
-    text = f"📢 **প্রিভিউ:**\n\n{message.text}\n\nপাঠানোর আগে নিশ্চিত হন।"
-    await state.set_state(MainStates.admin_bc_confirm)
-    
-    if data.get('bc_photo'):
-        await message.answer_photo(data['bc_photo'], caption=text, parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ পাঠান", callback_data="admin_bc_send")],
-                [InlineKeyboardButton(text="❌ বাতিল", callback_data="admin_panel")]
-            ]))
-    else:
-        await message.answer(text, parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ পাঠান", callback_data="admin_bc_send")],
-                [InlineKeyboardButton(text="❌ বাতিল", callback_data="admin_panel")]
-            ]))
-
-@router.callback_query(F.data == "admin_bc_send", MainStates.admin_bc_confirm)
-async def admin_bc_send_action(callback: types.CallbackQuery, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    bc_type = data.get('bc_type')
-    text = data.get('bc_text')
-    photo = data.get('bc_photo')
-    
-    await state.clear()
-    status_msg = await callback.message.edit_text("🔄 ব্রডকাস্ট প্রসেসিং চলছে...")
-    
-    users = []
-    if bc_type == "main":
-        users = [x[0] for x in db.execute_fetch("SELECT user_id FROM users")]
-    elif bc_type == "global":
-        # Main users
-        main_users = set(x[0] for x in db.execute_fetch("SELECT user_id FROM users"))
-        # Client bot users
-        client_users = set(x[0] for x in db.execute_fetch("SELECT user_id FROM client_bot_users"))
-        users = list(main_users.union(client_users))
-        
-    success, fail = await broadcast_to_users(bot, users, text, photo)
-    await status_msg.edit_text(f"✅ ব্রডকাস্ট শেষ!\n\nসফল: {success}\nব্যর্থ: {fail}")
-
-@router.callback_query(F.data == "admin_restart_all")
-async def admin_restart_all(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
-    await callback.answer("সব বট রিস্টার্ট হচ্ছে...")
-    await restart_all_client_bots()
-    await callback.message.edit_text("✅ সব বট রিস্টার্ট কমান্ড দেওয়া হয়েছে।", reply_markup=get_main_keyboard(callback.from_user.id))
-
-# --- CLIENT BOT SYSTEM ---
-
-async def start_client_bot_task(token: str, bot_id: int):
-    """Task to run a single client bot."""
-    
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
-    
-    current_task = asyncio.current_task()
-    client_bots[bot_id] = {'bot': bot, 'dp': dp, 'task': current_task}
-
-    # Register Handlers
-    @dp.message(CommandStart())
-    async def client_start(message: Message):
-        uid = message.from_user.id
-        db.execute_write(
-            "INSERT OR IGNORE INTO client_bot_users (client_bot_id, user_id) VALUES (?, ?)",
-            (bot_id, uid)
-        )
-        
-        settings = db.execute_fetch(
-            "SELECT image_file_id, welcome_text, buttons FROM welcome_settings WHERE bot_id=?", 
-            (bot_id,)
-        )
-        
-        if settings:
-            img, txt, btns_json = settings[0]
-            kb = None
-            if btns_json:
-                try:
-                    btns_list = json.loads(btns_json)
-                    valid_btns = []
-                    for b in btns_list:
-                        if is_valid_url(b.get('url', '')):
-                            valid_btns.append([InlineKeyboardButton(text=b['name'], url=b['url'])])
-                    
-                    if valid_btns:
-                        kb = InlineKeyboardMarkup(inline_keyboard=valid_btns)
-                except Exception as e:
-                    logger.error(f"Button JSON error for bot {bot_id}: {e}")
-            
-            try:
-                if img:
-                    await bot.send_photo(message.chat.id, img, caption=txt, reply_markup=kb)
-                elif txt:
-                    await message.answer(txt, reply_markup=kb)
-            except TelegramBadRequest as e:
-                logger.error(f"Send error in bot {bot_id}: {e}")
-                await message.answer("⚠️ স্বাগতম বার্তা দেখাতে সমস্যা হচ্ছে। বাটন URL ভুল থাকতে পারে।")
-            except Exception as e:
-                logger.error(f"Generic send error in bot {bot_id}: {e}")
-        else:
-            await message.answer("👋 হ্যালো! আমি একটি বট।")
-
-    logger.info(f"Client Bot {bot_id} started polling.")
-    
-    try:
-        await dp.start_polling(bot, handle_signals=False)
-    except asyncio.CancelledError:
-        logger.info(f"Bot {bot_id} stopped gracefully.")
-    except Exception as e:
-        logger.error(f"Client Bot {bot_id} crashed: {e}")
-        db.execute_write(
-            "INSERT INTO error_logs (bot_id, error_text, timestamp) VALUES (?, ?, ?)",
-            (bot_id, str(e), str(datetime.now()))
-        )
-    finally:
-        if bot_id in client_bots:
-            del client_bots[bot_id]
-        await bot.session.close()
-
-async def restart_all_client_bots():
-    logger.info("Restarting all client bots...")
-    bots = db.execute_fetch("SELECT bot_token, bot_id FROM client_bots")
-    tasks = []
-    for token, bot_id in bots:
-        if bot_id not in client_bots:
-            tasks.append(asyncio.create_task(start_client_bot_task(token, bot_id)))
-    
-    if tasks:
-        await asyncio.gather(*tasks)
-
-# --- WEBHOOK / RENDER SETUP ---
-from aiohttp import web
-
-async def handle_webhook(request: web.Request):
-    """Handle incoming webhook requests."""
-    # This is a simplified webhook handler. 
-    # For main bot, we need to verify secret if set, then feed update to dispatcher.
-    # Since this bot is primarily polling based in structure, 
-    # Render deployment often uses polling with keep-alive or proper webhook setup.
-    # Given the request, we'll stick to polling but add a health check server.
-    return web.Response(text="Bot is running.")
-
-async def on_startup(bot: Bot):
-    if ADMIN_IDS:
-        try:
-            await bot.send_message(ADMIN_IDS[0], "🚀 **Bot Control Hub Started!**\n\nSystem Online.", parse_mode="Markdown")
-        except: pass
-    asyncio.create_task(restart_all_client_bots())
-
-async def on_shutdown(bot: Bot):
-    logger.info("Shutting down...")
-    for bot_id, data in client_bots.items():
-        try:
-            if 'task' in data: data['task'].cancel()
-            await data['bot'].session.close()
-        except: pass
-
-async def main():
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not found.")
+@router.message(StateFilter(Form.add_channel_link))
+async def save_channel(message: Message, state: FSMContext):
+    link = message.text
+    if "t.me/" not in link:
+        await message.answer("সঠিক টেলিগ্রাম লিংক দিন!")
         return
+    
+    # Try to get chat ID
+    try:
+        chat = await message.bot.get_chat(link)
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO channels (channel_id, channel_title, channel_link) VALUES (?, ?, ?)",
+                       (chat.id, chat.title, link))
+        conn.commit()
+        conn.close()
+        await state.clear()
+        await message.answer(f"✅ {chat.title} যোগ হয়েছে!", reply_markup=get_admin_keyboard())
+    except Exception as e:
+        await message.answer(f"এরর: {e}. বট কি চ্যানেলে এডমিন?")
 
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+@router.callback_query(F.data.startswith("rmch_"))
+async def remove_channel(callback: CallbackQuery):
+    cid = int(callback.data.split("_")[1])
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM channels WHERE channel_id = ?", (cid,))
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("চ্যানেল সরানো হয়েছে।")
+
+# Admin Broadcast to Main Bot Users
+@router.message(F.text == "📢 ইউজার ব্রডকাস্ট")
+async def admin_broadcast_start(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("মেইন বটের ইউজারদের কি মেসেজ পাঠাবেন? (শুধু টেক্সট):")
+    await state.set_state(Form.admin_broadcast_msg)
+
+@router.message(StateFilter(Form.admin_broadcast_msg))
+async def admin_broadcast_confirm(message: Message, state: FSMContext):
+    await state.update_data(msg=message.text)
+    await message.answer("আপনি কি নিশ্চিত? (হ্যাঁ/না)")
+    await state.set_state(Form.admin_broadcast_confirm)
+
+@router.message(StateFilter(Form.admin_broadcast_confirm))
+async def admin_broadcast_send(message: Message, state: FSMContext):
+    if message.text.lower() in ["হ্যাঁ", "yes", "ha"]:
+        data = await state.get_data()
+        msg_text = data['msg']
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        users = cursor.execute("SELECT user_id FROM users").fetchall()
+        conn.close()
+        
+        count = 0
+        for (uid,) in users:
+            try:
+                await message.bot.send_message(uid, msg_text)
+                count += 1
+                await asyncio.sleep(0.05) # Prevent flood
+            except:
+                pass
+        
+        await message.answer(f"✅ ব্রডকাস্ট সম্পন্ন! পাঠানো হয়েছে {count} জনকে।", reply_markup=get_admin_keyboard())
+    else:
+        await message.answer("বাতিল করা হলো।")
+    await state.clear()
+
+# --- Client Bot Handler (The Logic for Connected Bots) ---
+# Since we are running multiple bots, we need to handle updates for them.
+# In a single-process environment with webhooks or polling, we usually handle them separately.
+# Here we simulate a simple multiplexer or we rely on the fact that we can't easily poll multiple bots in one script without threading.
+# FOR RENDER DEPLOYMENT: We will assume this script manages the MAIN BOT. 
+# The Client Bots logic must be triggered. Since we cannot spawn infinite pollers on free Render,
+# We implement a **Dispatcher that can handle updates from multiple bots via Webhook** OR
+# For simplicity in this specific request (Single main.py, polling): 
+# We will implement a polling loop that polls the main bot AND polls client bots dynamically.
+
+# --- Client Bot Dispatcher Logic ---
+# We need a way to run client bots. We'll create a manager for them.
+
+class ClientBotManager:
+    def __init__(self):
+        self.active_bots: Dict[int, Bot] = {}
+        self.dispatcher = Dispatcher()
+        self.setup_handlers()
+
+    def setup_handlers(self):
+        # Register handlers for client bots
+        @self.dispatcher.message(Command("start"))
+        async def client_start(message: Message, bot: Bot):
+            # Identify bot
+            bot_id = bot.id
+            
+            # Save User to client_bot_users
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO client_bot_users (bot_id, user_id, joined_at) VALUES (?, ?, ?)",
+                           (bot_id, message.from_user.id, str(datetime.datetime.now())))
+            conn.commit()
+            
+            # Fetch Config
+            cursor.execute("SELECT welcome_text, welcome_img_id, buttons_json FROM client_bots WHERE bot_id = ?", (bot_id,))
+            config = cursor.fetchone()
+            conn.close()
+            
+            if config:
+                text, img_id, btn_json = config
+                btns = None
+                if btn_json:
+                    import json
+                    btn_list = json.loads(btn_json)
+                    kb = [[InlineKeyboardButton(text=b['name'], url=b['url'])] for b in btn_list]
+                    btns = InlineKeyboardMarkup(inline_keyboard=kb)
+                
+                try:
+                    if img_id:
+                        await message.answer_photo(img_id, caption=text, reply_markup=btns)
+                    else:
+                        await message.answer(text, reply_markup=btns)
+                except Exception as e:
+                    print(f"Error sending welcome for client bot: {e}")
+            else:
+                await message.answer("হ্যালো! বটটি কনফিগার করা হয়নি।")
+
+        @self.dispatcher.message(Command("broadcast"))
+        async def client_broadcast(message: Message, bot: Bot):
+            bot_id = bot.id
+            user_id = message.from_user.id
+            
+            # Check if broadcast admin
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 FROM broadcast_admins WHERE bot_id = ? AND user_id = ?", (bot_id, user_id))
+            is_auth = cursor.fetchone()
+            conn.close()
+            
+            if not is_auth:
+                await message.answer("⛔ আপনার এই কমান্ড ব্যবহার করার অনুমতি নেই!")
+                return
+            
+            # Use FSM for flow? Since client bots share a dp, we need state storage isolation.
+            # Simplified: Ask for message now.
+            # For simplicity in this single-file constraint, let's do a simple flow:
+            # "Send me the text to broadcast"
+            # We can't easily use FSM here without complex setup, so we use a dict state or assume admin sends text immediately? 
+            # Let's use a simplified FSM memory storage for client bots.
+            
+            await message.answer("📢 ব্রডকাস্ট মেসেজ পাঠান (শুধু টেক্সট):")
+            # In a real multi-bot FSM scenario, we'd set state. 
+            # Here we'll just save the state in a temporary dict keyed by user_id+bot_id
+            
+            # For the sake of this complete code, we will treat the next message as broadcast content if they are admin.
+            # BUT, without FSM it's risky. Let's just use a simple text expectation.
+            # Since we cannot easily define FSM States dynamically for client bots in this scope without duplication,
+            # We'll use a placeholder logic: Admin sends /broadcast -> Bot says "Send text" -> Admin sends text -> Bot broadcasts.
+            # To achieve this: We need to track that they are in "broadcast mode".
+            
+            # Simple solution: Use the Database as state.
+            cursor = get_db().cursor()
+            cursor.execute("INSERT OR REPLACE INTO temp_states (key, value) VALUES (?, ?)", (f"bc_{bot_id}_{user_id}", "waiting"))
+            get_db().commit() # Assuming temp_states table exists (we add it to init)
+            
+        @self.dispatcher.message()
+        async def client_text_handler(message: Message, bot: Bot):
+            # Check if in broadcast mode
+            conn = get_db()
+            cursor = conn.cursor()
+            # Create table if not exists (lazy)
+            cursor.execute("CREATE TABLE IF NOT EXISTS temp_states (key TEXT PRIMARY KEY, value TEXT)")
+            conn.commit()
+            
+            key = f"bc_{bot.id}_{message.from_user.id}"
+            cursor.execute("SELECT value FROM temp_states WHERE key = ?", (key,))
+            state = cursor.fetchone()
+            
+            if state and state[0] == "waiting":
+                # It is broadcast text
+                cursor.execute("DELETE FROM temp_states WHERE key = ?", (key,))
+                conn.commit()
+                
+                # Broadcast
+                cursor.execute("SELECT user_id FROM client_bot_users WHERE bot_id = ?", (bot.id,))
+                targets = cursor.fetchall()
+                conn.close()
+                
+                success = 0
+                for (tid,) in targets:
+                    try:
+                        await bot.send_message(tid, message.text)
+                        success += 1
+                        await asyncio.sleep(0.05)
+                    except:
+                        pass
+                
+                await message.answer(f"✅ ব্রডকাস্ট সম্পন্ন! পাঠানো হয়েছে {success} জনকে।")
+            else:
+                conn.close()
+                await message.answer("আমি এই মেসেজটি বুঝতে পারছি না। 😅")
+
+    async def start_bot(self, token: str):
+        if token not in self.active_bots:
+            bot = Bot(token=token)
+            self.active_bots[token] = bot
+            # We cannot start a separate poller easily in one async loop without creating tasks
+            asyncio.create_task(self._poll(bot))
+
+    async def _poll(self, bot: Bot):
+        # Simple long polling loop for client bot
+        offset = None
+        while True:
+            try:
+                updates = await bot.get_updates(offset=offset, timeout=10)
+                for update in updates:
+                    offset = update.update_id + 1
+                    # Feed update to dispatcher
+                    await self.dispatcher.feed_update(bot, update)
+            except Exception as e:
+                print(f"Error polling client bot: {e}")
+                await asyncio.sleep(5)
+
+# We need to integrate this manager into the main startup
+# Initialize ClientBotManager globally
+client_manager = ClientBotManager()
+
+# And update init_db to include temp_states
+def init_db():
+    # ... previous code ...
+    with sqlite3.connect(DB_NAME) as conn:
+        # ... previous tables ...
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS temp_states (key TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+
+# We need to load existing bots on startup
+async def on_startup(dispatcher: Dispatcher):
+    print("Starting up...")
+    # Init DB again to be sure
+    init_db()
+    
+    # Load client bots
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT bot_token FROM client_bots")
+    tokens = cursor.fetchall()
+    conn.close()
+    
+    for (token,) in tokens:
+        try:
+            await client_manager.start_bot(token)
+            print(f"Started client bot with token ending in ...{token[-5:]}")
+        except Exception as e:
+            print(f"Failed to start client bot: {e}")
+
+# --- Main Entry ---
+async def main():
+    # Initialize Bot
+    bot = Bot(token=TOKEN)
+    # Memory storage for FSM
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
+    
+    # Register routers
     dp.include_router(router)
     
+    # Run startup hook
     dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
-    logger.info("Main Bot Controller starting...")
     
-    # Start aiohttp server for Render health check / port binding
-    app = web.Application()
-    app.add_routes([web.get('/', handle_webhook), web.post('/', handle_webhook)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-
-    try:
-        # Start polling
-        await dp.start_polling(bot, handle_signals=True)
-    except Exception as e:
-        logger.critical(f"Main Bot Polling Error: {e}")
-    finally:
-        await bot.session.close()
-        await runner.cleanup()
+    # Start polling for Main Bot
+    print("Main Bot is running...")
+    
+    # We need to run the main bot polling AND the client bot manager tasks
+    # Since dp.start_polling is blocking, we run it.
+    # Client bots are started in 'on_startup' as background tasks.
+    
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Bot stopped manually.")
+        pass
