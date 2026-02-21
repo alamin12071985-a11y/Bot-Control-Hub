@@ -1,0 +1,18 @@
+{
+  "name": "bot-control-hub",
+  "version": "1.0.0",
+  "description": "A Telegram Bot Controller Hub with SQLite database",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.15.0",
+    "sqlite3": "^5.1.6",
+    "express": "^4.18.2",
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
