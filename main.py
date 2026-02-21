@@ -190,10 +190,11 @@ async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
         return True, []
 
 def get_main_menu_keyboard():
-    """Get main menu reply keyboard."""
+    """Get main menu reply keyboard with admin panel always visible."""
     keyboard = [
         [KeyboardButton("🤖 আমার বটসমূহ"), KeyboardButton("➕ নতুন বট যুক্ত করুন")],
-        [KeyboardButton("📢 ব্রডকাস্ট সেটআপ"), KeyboardButton("🆘 সাহায্য")]
+        [KeyboardButton("📢 ব্রডকাস্ট সেটআপ"), KeyboardButton("🆘 সাহায্য")],
+        [KeyboardButton("👑 অ্যাডমিন প্যানেল")]  # Admin panel always visible
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -806,7 +807,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if user_id not in ADMIN_IDS:
             await update.message.reply_text(
-                "❌ এই প্যানেল শুধুমাত্র অ্যাডমিনদের জন্য!",
+                "❌ আপনি অ্যাডমিন নন! শুধুমাত্র অ্যাডমিনরা এই প্যানেল ব্যবহার করতে পারবেন।",
                 reply_markup=get_main_menu_keyboard()
             )
             return
@@ -1321,6 +1322,7 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         text = update.message.text
+        user_id = update.effective_user.id
         
         if text == "🤖 আমার বটসমূহ":
             await my_bots(update, context)
@@ -1330,26 +1332,37 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await broadcast_setup(update, context)
         elif text == "🆘 সাহায্য":
             await help_command(update, context)
-        elif text == "📊 পরিসংখ্যান" and update.effective_user.id in ADMIN_IDS:
+        elif text == "👑 অ্যাডমিন প্যানেল":
+            if user_id in ADMIN_IDS:
+                await admin_panel(update, context)
+            else:
+                await update.message.reply_text(
+                    "❌ আপনি অ্যাডমিন নন! শুধুমাত্র অ্যাডমিনরা এই প্যানেল ব্যবহার করতে পারবেন।",
+                    reply_markup=get_main_menu_keyboard()
+                )
+        elif text == "📊 পরিসংখ্যান" and user_id in ADMIN_IDS:
             await admin_stats(update, context)
-        elif text == "📢 ব্রডকাস্ট" and update.effective_user.id in ADMIN_IDS:
+        elif text == "📢 ব্রডকাস্ট" and user_id in ADMIN_IDS:
             await admin_broadcast(update, context)
-        elif text == "📺 ফোর্স জয়েন" and update.effective_user.id in ADMIN_IDS:
+        elif text == "📺 ফোর্স জয়েন" and user_id in ADMIN_IDS:
             await force_join_management(update, context)
-        elif text == "👑 অ্যাডমিন প্যানেল" and update.effective_user.id in ADMIN_IDS:
-            await admin_panel(update, context)
         elif text == "🔙 ফিরে যান":
             await update.message.reply_text(
                 "মূল মেনুতে ফিরে আসছি...",
                 reply_markup=get_main_menu_keyboard()
             )
         else:
+            # Invalid option - return to main menu with clear message
             await update.message.reply_text(
                 "🤔 দয়া করে মেনু থেকে একটি অপশন সিলেক্ট করুন।",
                 reply_markup=get_main_menu_keyboard()
             )
     except Exception as e:
         logger.error(f"Handle menu error: {e}")
+        await update.message.reply_text(
+            "😔 একটি ত্রুটি হয়েছে। আবার চেষ্টা করুন।",
+            reply_markup=get_main_menu_keyboard()
+        )
 
 # Cancel conversation
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
