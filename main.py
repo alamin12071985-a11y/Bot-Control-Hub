@@ -1,10 +1,15 @@
 import os
+import sys
 import logging
 import sqlite3
 import asyncio
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 from contextlib import contextmanager
+
+# Check Python version
+if sys.version_info >= (3, 12):
+    print("WARNING: Running on Python 3.12+. Some features may have compatibility issues.")
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
@@ -86,7 +91,7 @@ async def init_database():
                     first_name TEXT,
                     last_name TEXT,
                     joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active BOOLEAN DEFAULT 1
+                    is_active INTEGER DEFAULT 1
                 )
             ''')
             
@@ -97,8 +102,7 @@ async def init_database():
                     channel_username TEXT,
                     channel_title TEXT,
                     added_by INTEGER,
-                    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (added_by) REFERENCES users(user_id)
+                    added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
@@ -114,8 +118,7 @@ async def init_database():
                     welcome_text TEXT,
                     button_count INTEGER DEFAULT 0,
                     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active BOOLEAN DEFAULT 1,
-                    FOREIGN KEY (owner_id) REFERENCES users(user_id)
+                    is_active INTEGER DEFAULT 1
                 )
             ''')
             
@@ -126,8 +129,7 @@ async def init_database():
                     bot_token TEXT,
                     button_name TEXT,
                     button_url TEXT,
-                    button_order INTEGER,
-                    FOREIGN KEY (bot_token) REFERENCES client_bots(bot_token)
+                    button_order INTEGER
                 )
             ''')
             
@@ -140,8 +142,7 @@ async def init_database():
                     username TEXT,
                     first_name TEXT,
                     joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(bot_token, user_id),
-                    FOREIGN KEY (bot_token) REFERENCES client_bots(bot_token)
+                    UNIQUE(bot_token, user_id)
                 )
             ''')
             
@@ -152,8 +153,7 @@ async def init_database():
                     bot_token TEXT,
                     admin_id INTEGER,
                     added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(bot_token, admin_id),
-                    FOREIGN KEY (bot_token) REFERENCES client_bots(bot_token)
+                    UNIQUE(bot_token, admin_id)
                 )
             ''')
             
@@ -360,29 +360,27 @@ async def process_bot_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Validate token by trying to get bot info
         try:
-            # Create temporary application for this bot
-            temp_app = Application.builder().token(token).build()
-            async with temp_app:
-                bot = temp_app.bot
-                bot_info = await bot.get_me()
-                
-                # Save bot info temporarily
-                context.user_data['temp_bot_token'] = token
-                context.user_data['temp_bot_info'] = {
-                    'id': bot_info.id,
-                    'username': bot_info.username,
-                    'name': bot_info.first_name
-                }
-                
-                await update.message.reply_text(
-                    f"✅ **বট পাওয়া গেছে!**\n\n"
-                    f"বটের নাম: {bot_info.first_name}\n"
-                    f"ইউজারনেম: @{bot_info.username}\n"
-                    f"বট আইডি: `{bot_info.id}`\n\n"
-                    f"এখন একটি ওয়েলকাম ইমেজ দিন (অথবা স্কিপ করতে /skip দিন):",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                return WAITING_WELCOME_IMAGE
+            # Create temporary bot instance
+            temp_bot = Application.builder().token(token).build().bot
+            bot_info = await temp_bot.get_me()
+            
+            # Save bot info temporarily
+            context.user_data['temp_bot_token'] = token
+            context.user_data['temp_bot_info'] = {
+                'id': bot_info.id,
+                'username': bot_info.username,
+                'name': bot_info.first_name
+            }
+            
+            await update.message.reply_text(
+                f"✅ **বট পাওয়া গেছে!**\n\n"
+                f"বটের নাম: {bot_info.first_name}\n"
+                f"ইউজারনেম: @{bot_info.username}\n"
+                f"বট আইডি: `{bot_info.id}`\n\n"
+                f"এখন একটি ওয়েলকাম ইমেজ দিন (অথবা স্কিপ করতে /skip দিন):",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return WAITING_WELCOME_IMAGE
                 
         except Exception as e:
             logger.error(f"Token validation error: {e}")
@@ -399,7 +397,7 @@ async def process_bot_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def process_welcome_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process welcome image."""
     try:
-        if update.message.text == "/skip":
+        if update.message and update.message.text == "/skip":
             context.user_data['temp_welcome_image'] = None
             await update.message.reply_text(
                 "📝 এখন ওয়েলকাম টেক্সট দিন:\n\n"
@@ -407,7 +405,7 @@ async def process_welcome_image(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return WAITING_WELCOME_TEXT
         
-        if update.message.photo:
+        if update.message and update.message.photo:
             # Get the largest photo
             photo = update.message.photo[-1]
             context.user_data['temp_welcome_image'] = photo.file_id
@@ -427,7 +425,7 @@ async def process_welcome_image(update: Update, context: ContextTypes.DEFAULT_TY
 async def process_welcome_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process welcome text."""
     try:
-        if update.message.text == "🔙 ফিরে যান":
+        if update.message and update.message.text == "🔙 ফিরে যান":
             await update.message.reply_text(
                 "মূল মেনুতে ফিরে আসছি...",
                 reply_markup=get_main_menu_keyboard()
@@ -614,8 +612,9 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
             token, name, username, text, button_count, date = bot
             try:
                 date_obj = datetime.strptime(date, '%Y-%m-%d %H:%M:%S')
+                date_str = date_obj.strftime('%d %b %Y, %I:%M %p')
             except:
-                date_obj = datetime.now()
+                date_str = "অজানা"
             
             # Get buttons for this bot
             async with aiosqlite.connect(DATABASE_FILE) as db:
@@ -637,7 +636,7 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🆔 @{username}\n"
                 f"📝 ওয়েলকাম: {text[:50]}...\n"
                 f"🔢 বাটন সংখ্যা: {button_count}{buttons_text}\n"
-                f"📅 যোগের তারিখ: {date_obj.strftime('%d %b %Y, %I:%M %p')}\n\n"
+                f"📅 যোগের তারিখ: {date_str}\n\n"
                 f"**অপশন:**"
             )
             
@@ -922,6 +921,7 @@ async def process_admin_broadcast(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=get_admin_keyboard()
         )
         
+        total_users = len(users)
         for i, (user_id,) in enumerate(users, 1):
             try:
                 await context.bot.send_message(
@@ -934,15 +934,15 @@ async def process_admin_broadcast(update: Update, context: ContextTypes.DEFAULT_
                 logger.error(f"Broadcast to {user_id} failed: {e}")
                 failed += 1
             
-            if i % 10 == 0:
-                percentage = (i / len(users)) * 100
+            if i % 10 == 0 and total_users > 0:
+                percentage = (i / total_users) * 100
                 await status_msg.edit_text(f"📤 ব্রডকাস্ট পাঠানো হচ্ছে... {percentage:.1f}%")
         
         await status_msg.edit_text(
             f"✅ **ব্রডকাস্ট সম্পন্ন!**\n\n"
             f"✓ সফল: {sent}\n"
             f"✗ ব্যর্থ: {failed}\n"
-            f"📊 মোট: {len(users)}",
+            f"📊 মোট: {total_users}",
             parse_mode=ParseMode.MARKDOWN
         )
         
@@ -1317,6 +1317,9 @@ async def back_to_bots_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle menu button presses."""
     try:
+        if not update.message:
+            return
+            
         text = update.message.text
         
         if text == "🤖 আমার বটসমূহ":
@@ -1381,8 +1384,12 @@ def main():
         # Initialize database
         asyncio.run(init_database())
         
-        # Create application
-        application = Application.builder().token(BOT_TOKEN).build()
+        # Create application with simplified builder
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .build()
+        )
         
         # Add conversation handler for adding new bot
         add_bot_conv = ConversationHandler(
@@ -1480,6 +1487,7 @@ def main():
         
     except Exception as e:
         logger.error(f"Main function error: {e}")
+        raise
 
 if __name__ == '__main__':
     main()
