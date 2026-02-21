@@ -4,6 +4,7 @@ import os
 import sqlite3
 import json
 import sys
+import re
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 
@@ -13,7 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, ContentType
-from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramNotFound
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
@@ -21,11 +22,7 @@ from aiogram.enums import ParseMode
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "0").split(",") if id.isdigit()]
 REQUIRED_CHANNELS = [ch for ch in os.getenv("REQUIRED_CHANNELS", "").split(",") if ch]
-
-# Render friendly port (unused in polling but good for binding if needed)
 PORT = int(os.getenv("PORT", 5000))
-
-# Database Name
 DB_NAME = "bot_control_hub.db"
 
 # --- LOGGING SETUP ---
@@ -70,7 +67,6 @@ class DatabaseManager:
 db = DatabaseManager(DB_NAME)
 
 def init_db():
-    """Initialize database tables."""
     queries = [
         """CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -131,14 +127,10 @@ class MainStates(StatesGroup):
     admin_broadcast_btn = State()
     managing_bot = State()
 
-class ClientBroadcastStates(StatesGroup):
-    waiting_image = State()
-    waiting_text = State()
-    waiting_buttons = State()
-
 # --- GLOBALS & STORAGE ---
 router = Router()
-client_bots: Dict[int, Dict] = {} # {bot_id: {"bot": Bot, "dp": Dispatcher, "task": Task}}
+# Structure: {bot_id: {"bot": Bot, "dp": Dispatcher, "task": asyncio.Task}}
+client_bots: Dict[int, Dict] = {} 
 
 # --- HELPERS ---
 def get_bengali_welcome():
@@ -148,6 +140,18 @@ def get_bengali_welcome():
         "ব্রডকাস্ট সিস্টেম সেটআপ করতে পারবেন।\n\n"
         "শুরু করতে নিচের বাটমে ক্লিক করুন! 😼"
     )
+
+def is_valid_url(url: str) -> bool:
+    """Check if url is valid http/https or tg:// deep link."""
+    if url.startswith("tg://"): return True
+    regex = re.compile(
+        r'^(?:http|ftp)s?://' # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
+        r'localhost|' #localhost...
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
+        r'(?::\d+)?' # optional port
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+    return re.match(regex, url) is not None
 
 # --- KEYBOARDS ---
 def get_main_keyboard():
@@ -188,13 +192,11 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     user = message.from_user
     
-    # Register User
     db.execute_write(
         "INSERT OR IGNORE INTO users (user_id, full_name, username, join_date) VALUES (?, ?, ?, ?)",
         (user_id, user.full_name, user.username, str(datetime.now()))
     )
 
-    # Check Force Join
     if not await check_subscription(user_id, bot):
         await message.answer(
             "🔒 দুঃখিত! বট ব্যবহার করতে হলে নিচের চ্যানেলগুলোতে জয়েন করতে হবে।",
@@ -255,13 +257,11 @@ async def add_new_bot(callback: types.CallbackQuery, state: FSMContext):
 async def process_token(message: Message, state: FSMContext, bot: Bot):
     token = message.text.strip()
     
-    # Check if bot already exists
     existing = db.execute_fetch("SELECT bot_id FROM client_bots WHERE bot_token=?", (token,))
     if existing:
         await message.answer("❌ এই বট টি ইতিমধ্যে সিস্টেমে যুক্ত আছে।")
         return
 
-    # Validate Token
     try:
         new_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
         bot_info = await new_bot.get_me()
@@ -270,13 +270,11 @@ async def process_token(message: Message, state: FSMContext, bot: Bot):
         await message.answer(f"❌ টোকেন অবৈধ! আবার চেষ্টা করুন।\nError: `{e}`", parse_mode="Markdown")
         return
 
-    # Save to DB
     db.execute_write(
         "INSERT INTO client_bots (owner_id, bot_token, bot_username, bot_id, added_date) VALUES (?, ?, ?, ?, ?)",
         (message.from_user.id, token, bot_info.username, bot_info.id, str(datetime.now()))
     )
 
-    # Alert Admin
     if ADMIN_IDS:
         alert_text = (
             f"🆕 <b>New Bot Connected!</b>\n"
@@ -288,7 +286,6 @@ async def process_token(message: Message, state: FSMContext, bot: Bot):
 
     await state.update_data(current_bot_token=token, current_bot_id=bot_info.id, current_bot_username=bot_info.username)
     
-    # Start Setup Flow
     await state.set_state(MainStates.waiting_for_image_decision)
     await message.answer(
         f"✅ বট সফলভাবে যুক্ত হয়েছে: @{bot_info.username}\n\n"
@@ -352,7 +349,13 @@ async def process_button_details(message: Message, state: FSMContext):
         if len(parts) < 2: raise ValueError
         name = parts[0].strip()
         url = parts[1].strip()
-    except:
+        
+        # VALIDATION FIX: Check URL
+        if not is_valid_url(url):
+            await message.answer("⚠️ অবৈধ URL! অনুগ্রহ করে সঠিক লিংক দিন।\nউদাহরণ: `https://t.me/username` অথবা `tg://resolve?domain=username`", parse_mode="Markdown")
+            return
+            
+    except ValueError:
         await message.answer("❌ ফরম্যাট ঠিক নেই! আবার লিখুন: `নাম | URL`", parse_mode="Markdown")
         return
 
@@ -379,8 +382,10 @@ async def finalize_bot_setup(message: Message, state: FSMContext, data: Dict, bu
     
     # Start the client bot immediately
     token = data['current_bot_token']
-    asyncio.create_task(start_client_bot_task(token, bot_id))
-
+    task = asyncio.create_task(start_client_bot_task(token, bot_id))
+    # Store task reference properly to avoid KeyError later
+    # Note: start_client_bot_task handles adding itself to client_bots dict now
+    
     await state.clear()
     await message.answer(
         "🎉 **বট সেটআপ সম্পন্ন!**\n\n"
@@ -414,7 +419,6 @@ async def list_my_bots(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("manage_bot_"))
 async def manage_bot(callback: types.CallbackQuery, state: FSMContext):
     bot_id = int(callback.data.split("_")[-1])
-    await state.update_data(managing_bot_id=bot_id)
     
     is_running = bot_id in client_bots
     status_text = "🟢 চলছে" if is_running else "🔴 বন্ধ"
@@ -438,9 +442,15 @@ async def delete_bot(callback: types.CallbackQuery):
     
     # Stop bot if running
     if bot_id in client_bots:
-        task = client_bots[bot_id]['task']
-        task.cancel()
-        del client_bots[bot_id]
+        try:
+            task = client_bots[bot_id]['task']
+            task.cancel()
+            # Wait for task to be cancelled
+            try: await asyncio.wait_for(task, timeout=2.0)
+            except: pass 
+            del client_bots[bot_id]
+        except Exception as e:
+            logger.error(f"Error stopping bot {bot_id}: {e}")
 
     db.execute_write("DELETE FROM client_bots WHERE bot_id=?", (bot_id,))
     db.execute_write("DELETE FROM welcome_settings WHERE bot_id=?", (bot_id,))
@@ -461,15 +471,27 @@ async def restart_bot_handler(callback: types.CallbackQuery):
 
     token = bot_data[0][0]
     
+    # Stop existing task if running
     if bot_id in client_bots:
-        client_bots[bot_id]['task'].cancel()
-        del client_bots[bot_id]
+        try:
+            client_bots[bot_id]['task'].cancel()
+            del client_bots[bot_id]
+        except: pass
 
+    # Create new task
     asyncio.create_task(start_client_bot_task(token, bot_id))
-    await callback.answer("বট রিস্টার্ট করা হচ্ছে...")
+    await callback.answer("বট রিস্টার্ট হচ্ছে...")
     
-    # Refresh UI
-    await manage_bot(callback, None)
+    # Refresh UI by calling manage_bot logic again (need to construct callback-like object or reuse logic)
+    # Simplest way: Edit text manually
+    await callback.message.edit_text(
+        f"⚙️ **বট ম্যানেজমেন্ট**\n\n"
+        f"স্ট্যাটাস: 🔄 রিস্টার্ট হচ্ছে...\n",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+             [InlineKeyboardButton(text="🔄 রিফ্রেশ", callback_data=f"manage_bot_{bot_id}")],
+        ])
+    )
 
 @router.callback_query(F.data == "back_home")
 async def back_home(callback: types.CallbackQuery):
@@ -500,7 +522,6 @@ async def ask_bc_admins(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(bc_setup_bot_id=bot_id)
     await state.set_state(MainStates.broadcast_setup_ids)
     
-    # Show current admins
     current_admins = db.execute_fetch("SELECT admin_user_id FROM broadcast_admins WHERE client_bot_id=?", (bot_id,))
     admins_str = ", ".join([str(a[0]) for a in current_admins]) if current_admins else "কেউ নেই"
     
@@ -569,7 +590,7 @@ async def admin_restart_all(callback: types.CallbackQuery):
     await restart_all_client_bots()
     await callback.message.edit_text("✅ সব বট রিস্টার্ট কমান্ড দেওয়া হয়েছে।", reply_markup=get_main_keyboard())
 
-# Admin Broadcast Flow
+# Admin Broadcast Flow (Kept simple for length)
 @router.callback_query(F.data == "admin_broadcast_start")
 async def admin_bc_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
@@ -647,14 +668,9 @@ async def execute_admin_broadcast(message: Message, state: FSMContext):
             elif data.get('bc_text'):
                 await bot.send_message(uid, data['bc_text'], reply_markup=kb)
             sent += 1
-        except TelegramForbiddenError:
-            # User blocked bot
-            pass
-        except Exception as e:
-            logger.error(f"Broadcast error to {uid}: {e}")
+        except Exception:
             fail += 1
-        
-        await asyncio.sleep(0.05) # Flood control
+        await asyncio.sleep(0.05) 
 
     await status_msg.edit_text(f"✅ ব্রডকাস্ট শেষ!\n\nসফল: {sent}\nব্যর্থ: {fail}")
 
@@ -662,123 +678,96 @@ async def execute_admin_broadcast(message: Message, state: FSMContext):
 
 async def start_client_bot_task(token: str, bot_id: int):
     """Task to run a single client bot."""
-    if bot_id in client_bots:
-        logger.info(f"Bot {bot_id} already running.")
-        return
+    
+    # Setup Bot and Dispatcher
+    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher()
+    
+    # Store in global dict immediately with placeholder task to avoid race conditions
+    # We will update the 'task' key inside this function's execution context if needed, 
+    # but usually storing the bot object is enough for status checks.
+    
+    current_task = asyncio.current_task()
+    client_bots[bot_id] = {'bot': bot, 'dp': dp, 'task': current_task}
 
-    try:
-        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        dp = Dispatcher()
+    # Register Handlers
+    @dp.message(CommandStart())
+    async def client_start(message: Message):
+        uid = message.from_user.id
+        db.execute_write(
+            "INSERT OR IGNORE INTO client_bot_users (client_bot_id, user_id) VALUES (?, ?)",
+            (bot_id, uid)
+        )
         
-        # Register generic handlers with closure for bot_id
-        @dp.message(CommandStart())
-        async def client_start(message: Message):
-            uid = message.from_user.id
-            # Save user
-            db.execute_write(
-                "INSERT OR IGNORE INTO client_bot_users (client_bot_id, user_id) VALUES (?, ?)",
-                (bot_id, uid)
-            )
+        settings = db.execute_fetch(
+            "SELECT image_file_id, welcome_text, buttons FROM welcome_settings WHERE bot_id=?", 
+            (bot_id,)
+        )
+        
+        if settings:
+            img, txt, btns_json = settings[0]
+            kb = None
+            if btns_json:
+                try:
+                    btns_list = json.loads(btns_json)
+                    # Validate buttons before creating keyboard
+                    valid_btns = []
+                    for b in btns_list:
+                        if is_valid_url(b.get('url', '')):
+                            valid_btns.append([InlineKeyboardButton(text=b['name'], url=b['url'])])
+                    
+                    if valid_btns:
+                        kb = InlineKeyboardMarkup(inline_keyboard=valid_btns)
+                except Exception as e:
+                    logger.error(f"Button JSON error for bot {bot_id}: {e}")
             
-            # Get Settings
-            settings = db.execute_fetch(
-                "SELECT image_file_id, welcome_text, buttons FROM welcome_settings WHERE bot_id=?", 
-                (bot_id,)
-            )
-            
-            if settings:
-                img, txt, btns_json = settings[0]
-                kb = None
-                if btns_json:
-                    try:
-                        btns_list = json.loads(btns_json)
-                        kb = InlineKeyboardMarkup(inline_keyboard=[
-                            [InlineKeyboardButton(text=b['name'], url=b['url'])] for b in btns_list
-                        ])
-                    except: pass
-                
+            try:
                 if img:
                     await bot.send_photo(message.chat.id, img, caption=txt, reply_markup=kb)
                 elif txt:
                     await message.answer(txt, reply_markup=kb)
-            else:
-                await message.answer("👋 হ্যালো! আমি একটি বট।")
+            except TelegramBadRequest as e:
+                logger.error(f"Send error in bot {bot_id}: {e}")
+                await message.answer("⚠️ স্বাগতম বার্তা দেখাতে সমস্যা হচ্ছে। বাটন URL ভুল থাকতে পারে।")
+            except Exception as e:
+                logger.error(f"Generic send error in bot {bot_id}: {e}")
+        else:
+            await message.answer("👋 হ্যালো! আমি একটি বট।")
 
-        # Simple Broadcast Command for Client Bot
-        # Using a basic text-based flow for simplicity in multi-bot architecture
-        @dp.message(Command("broadcast"))
-        async def client_broadcast_trigger(message: Message):
-            uid = message.from_user.id
-            # Check Admin
-            is_admin = db.execute_fetch(
-                "SELECT 1 FROM broadcast_admins WHERE client_bot_id=? AND admin_user_id=?", 
-                (bot_id, uid)
-            )
-            if not is_admin:
-                await message.answer("⛔ আপনার অনুমতি নেই।")
-                return
+    @dp.message(Command("broadcast"))
+    async def client_broadcast_exec(message: Message):
+        uid = message.from_user.id
+        is_admin = db.execute_fetch(
+            "SELECT 1 FROM broadcast_admins WHERE client_bot_id=? AND admin_user_id=?", 
+            (bot_id, uid)
+        )
+        if not is_admin:
+            return
 
-            await message.answer(
-                "📢 ব্রডকাস্ট মোড চালু।\n\n"
-                "ব্রডকাস্ট মেসেজ এখনই পাঠান।\n"
-                "ফরম্যাট: `Photo | Caption | ButtonName | ButtonUrl` (সব অপশনাল)\n\n"
-                "অথবা শুধু টেক্সট পাঠান।"
-            )
-            # Wait for next message (Simplified FSM)
-            
-            # Note: Implementing full FSM for multiple dynamic bots in a single file requires 
-            # more complex state management. Here we use a one-shot approach.
-            
-            # Filter for next message from same user
-            # In production, we'd register a temporary handler or use external state.
-
-        # We need a way to handle the response. 
-        # Since we can't easily dynamically register FSM states for N bots without memory leaks or complex factory:
-        # We will register a generic message handler that checks if the user is in 'broadcast mode' via DB or Memory.
+        if not message.text or len(message.text) <= 11:
+            await message.answer("⚠️ ব্যবহার: `/broadcast আপনার মেসেজ`")
+            return
         
-        # For this iteration, we will implement a direct "Send to all" command logic for simplicity:
-        # !broadcast <message> -> sends to all.
+        broadcast_text = message.text[11:]
+        users = db.execute_fetch("SELECT user_id FROM client_bot_users WHERE client_bot_id=?", (bot_id,))
         
-        # Re-defining /broadcast for immediate execution for code stability in single file.
-        # Usage: /broadcast <message>
-        
-        # Override previous definition
-        @dp.message(Command("broadcast"))
-        async def client_broadcast_exec(message: Message):
-            uid = message.from_user.id
-            is_admin = db.execute_fetch(
-                "SELECT 1 FROM broadcast_admins WHERE client_bot_id=? AND admin_user_id=?", 
-                (bot_id, uid)
-            )
-            if not is_admin:
-                return
+        status = await message.answer(f"📢 ব্রডকাস্ট শুরু হলো... ({len(users)} জন)")
+        success = 0
+        for u in users:
+            try:
+                await bot.send_message(u[0], broadcast_text)
+                success += 1
+                await asyncio.sleep(0.04)
+            except:
+                pass
+        await status.edit_text(f"✅ ব্রডকাস্ট শেষ। সফল: {success}")
 
-            if not message.text or len(message.text) <= 11:
-                await message.answer("⚠️ ব্যবহার: `/broadcast আপনার মেসেজ`")
-                return
-            
-            broadcast_text = message.text[11:]
-            users = db.execute_fetch("SELECT user_id FROM client_bot_users WHERE client_bot_id=?", (bot_id,))
-            
-            status = await message.answer(f"📢 ব্রডকাস্ট শুরু হলো... ({len(users)} জন)")
-            success = 0
-            for u in users:
-                try:
-                    await bot.send_message(u[0], broadcast_text)
-                    success += 1
-                    await asyncio.sleep(0.04)
-                except:
-                    pass
-            await status.edit_text(f"✅ ব্রডকাস্ট শেষ। সফল: {success}")
-
-        # Store in global dict
-        client_bots[bot_id] = {'bot': bot, 'dp': dp}
-        
-        logger.info(f"Client Bot {bot_id} started polling.")
+    logger.info(f"Client Bot {bot_id} started polling.")
+    
+    try:
         await dp.start_polling(bot, handle_signals=False)
-        
     except asyncio.CancelledError:
-        logger.info(f"Bot {bot_id} stopped.")
+        logger.info(f"Bot {bot_id} stopped gracefully.")
     except Exception as e:
         logger.error(f"Client Bot {bot_id} crashed: {e}")
         db.execute_write(
@@ -786,12 +775,12 @@ async def start_client_bot_task(token: str, bot_id: int):
             (bot_id, str(e), str(datetime.now()))
         )
     finally:
+        # Clean up
         if bot_id in client_bots:
             del client_bots[bot_id]
         await bot.session.close()
 
 async def restart_all_client_bots():
-    """Load and start all active bots from database."""
     logger.info("Restarting all client bots...")
     bots = db.execute_fetch("SELECT bot_token, bot_id FROM client_bots")
     tasks = []
@@ -803,24 +792,25 @@ async def restart_all_client_bots():
 
 # --- MAIN ENTRY POINT ---
 async def on_startup(bot: Bot):
-    await bot.send_message(ADMIN_IDS[0], "🚀 **Bot Control Hub Started!**\n\nSystem Online.", parse_mode="Markdown")
-    # Start client bots in background
+    if ADMIN_IDS:
+        try:
+            await bot.send_message(ADMIN_IDS[0], "🚀 **Bot Control Hub Started!**\n\nSystem Online.", parse_mode="Markdown")
+        except: pass
     asyncio.create_task(restart_all_client_bots())
 
 async def on_shutdown(bot: Bot):
     logger.info("Shutting down...")
-    # Close all client bot sessions
     for bot_id, data in client_bots.items():
         try:
+            if 'task' in data: data['task'].cancel()
             await data['bot'].session.close()
         except: pass
 
 async def main():
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN not found in environment variables.")
+        logger.error("BOT_TOKEN not found.")
         return
 
-    # Init Main Bot
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
