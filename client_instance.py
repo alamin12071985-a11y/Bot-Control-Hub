@@ -1,18 +1,20 @@
 import logging
 import asyncio
+import ast
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-import database as db
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+import database as db
 
 logger = logging.getLogger(__name__)
 
 # Store running bots
 active_bots = {}
 
-class BroadcastState(StatesClass):
+# --- FIX: Define States Correctly for Client Bot ---
+class ClientBroadcastState(StatesGroup):
     image = State()
     text = State()
     button = State()
@@ -37,7 +39,7 @@ async def load_client_bot(token):
         bot = Bot(token=token)
         dp = Dispatcher()
         
-        # Register handlers for this bot
+        # --- Handler: Client Start ---
         @dp.message(Command("start"))
         async def client_start(message: types.Message):
             # Save user to client_users table
@@ -51,7 +53,6 @@ async def load_client_bot(token):
                 keyboard = None
                 if btns and str(btns) != '[]':
                     # Parse buttons saved as string repr of list
-                    import ast
                     btn_list = ast.literal_eval(btns)
                     kb_rows = []
                     for b in btn_list:
@@ -65,6 +66,7 @@ async def load_client_bot(token):
             else:
                 await message.answer("👋 স্বাগতম! বট এখনো কনফিগার করা হয়নি।")
 
+        # --- Handler: Client Broadcast ---
         @dp.message(Command("broadcast"))
         async def client_broadcast_start(message: types.Message, state: FSMContext):
             bot_info = await bot.get_me()
@@ -74,10 +76,10 @@ async def load_client_bot(token):
                 await message.answer("⛔ আপনার অনুমতি নেই।")
                 return
             
-            await state.set_state(BroadcastState.image)
+            await state.set_state(ClientBroadcastState.image)
             await message.answer("📢 Broadcast Image পাঠান অথবা 'Skip' লিখুন।")
 
-        @dp.message(BroadcastState.image)
+        @dp.message(ClientBroadcastState.image)
         async def bc_img(message: types.Message, state: FSMContext):
             img_id = None
             if message.photo:
@@ -87,17 +89,17 @@ async def load_client_bot(token):
                 return
             
             await state.update_data(img=img_id)
-            await state.set_state(BroadcastState.text)
+            await state.set_state(ClientBroadcastState.text)
             await message.answer("📝 Broadcast Text লিখুন বা Skip করুন।")
 
-        @dp.message(BroadcastState.text)
+        @dp.message(ClientBroadcastState.text)
         async def bc_text(message: types.Message, state: FSMContext):
             txt = message.text if message.text.lower() != 'skip' else None
             await state.update_data(txt=txt)
-            await state.set_state(BroadcastState.button)
+            await state.set_state(ClientBroadcastState.button)
             await message.answer("🔘 Button দিন (নাম - URL) বা Skip করুন।")
 
-        @dp.message(BroadcastState.button)
+        @dp.message(ClientBroadcastState.button)
         async def bc_btn(message: types.Message, state: FSMContext):
             btn_data = None
             if message.text.lower() != 'skip':
@@ -109,9 +111,7 @@ async def load_client_bot(token):
                     return
             
             await state.update_data(btn=btn_data)
-            data = await state.get_data()
             
-            # Confirm
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✅ কনফার্ম করুন", callback_data="confirm_bc")]
             ])
