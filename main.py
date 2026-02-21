@@ -373,7 +373,7 @@ async def startup_client_bots():
 
 def main():
     # Replace 'YOUR_HUB_BOT_TOKEN' with your main Hub Token
-    HUB_TOKEN = "YOUR_HUB_BOT_TOKEN" 
+    HUB_TOKEN = "8250934004:AAEA5kjsPS5tU0m2OR79g6XdzW70xMBtbYo" 
     app = ApplicationBuilder().token(HUB_TOKEN).build()
 
     # Add Bot Conv
