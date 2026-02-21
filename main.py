@@ -18,16 +18,15 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+# aiohttp ব্যবহার করা হচ্ছে শুধুমাত্র Keep-Alive সার্ভারের জন্য (Render স্লিপ আটকাতে)
+from aiohttp import web
+
 # --- CONFIGURATION & CONSTANTS ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(id) for id in os.getenv("ADMIN_IDS", "0").split(",") if id.isdigit()]
 
-# Webhook settings for Render
+# Render এর জন্য Port
 PORT = int(os.getenv("PORT", 5000))
-WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else ""
-
 DB_NAME = "bot_control_hub.db"
 
 # --- LOGGING SETUP ---
@@ -111,7 +110,6 @@ def init_db():
             error_text TEXT,
             timestamp TEXT
         )""",
-        # NEW: Channels table instead of ENV
         """CREATE TABLE IF NOT EXISTS force_join_channels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             channel_username TEXT UNIQUE
@@ -136,13 +134,20 @@ class MainStates(StatesGroup):
     admin_broadcast_text = State()
     admin_broadcast_btn = State()
     managing_bot = State()
-    # Admin Channel Management
     admin_add_channel = State()
+
+class AdminBroadcastStates(StatesGroup):
+    waiting_content = State()
+    confirming = State()
+
+class ClientBroadcastStates(StatesGroup):
+    waiting_content = State()
+    confirming = State()
 
 # --- GLOBALS & STORAGE ---
 router = Router()
-# Structure: {bot_id: {"bot": Bot, "dp": Dispatcher, "task": asyncio.Task}}
 client_bots: Dict[int, Dict] = {} 
+bc_target_type = {}
 
 # --- HELPERS ---
 def get_bengali_welcome():
@@ -154,34 +159,29 @@ def get_bengali_welcome():
     )
 
 def is_valid_url(url: str) -> bool:
-    """Check if url is valid http/https or tg:// deep link."""
     if url.startswith("tg://"): return True
     regex = re.compile(
-        r'^(?:http|ftp)s?://' # http:// or https://
-        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' #domain...
-        r'localhost|' #localhost...
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
-        r'(?::\d+)?' # optional port
+        r'^(?:http|ftp)s?://'
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'
+        r'localhost|'
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+        r'(?::\d+)?'
         r'(?:/?|[/?]\S+)$', re.IGNORECASE)
     return re.match(regex, url) is not None
 
 # --- KEYBOARDS ---
-
-# UPDATE: Added user_id check for Admin Panel
 def get_main_keyboard(user_id: int):
     buttons = [
         [InlineKeyboardButton(text="🤖 আমার বট সমূহ", callback_data="my_bots")],
         [InlineKeyboardButton(text="➕ নতুন বট যুক্ত করুন", callback_data="add_new_bot")],
         [InlineKeyboardButton(text="📢 ব্রডকাস্ট সেটআপ", callback_data="setup_broadcast")],
     ]
-    # Security Check: Only show Admin Panel if user is Admin
     if user_id in ADMIN_IDS:
         buttons.append([InlineKeyboardButton(text="🛠️ অ্যাডমিন প্যানেল", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_force_join_keyboard():
     buttons = []
-    # Fetch channels from DB
     channels = db.execute_fetch("SELECT channel_username FROM force_join_channels")
     if not channels:
         return None
@@ -195,24 +195,20 @@ def get_force_join_keyboard():
 
 # --- MIDDLEWARE: FORCE JOIN ---
 async def check_subscription(user_id: int, bot: Bot) -> bool:
-    # Fetch channels from DB
     channels = db.execute_fetch("SELECT channel_username FROM force_join_channels")
     if not channels:
-        return True # No channels required
+        return True
     
     for channel in channels:
         ch_name = channel[0]
         try:
-            # Ensure channel format is correct for API
             chat_id = ch_name if ch_name.startswith("-100") else ch_name
             member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
             if member.status in ["left", "kicked"]:
                 return False
         except Exception as e:
             logger.warning(f"Subscription check error for {ch_name}: {e}")
-            # To avoid blocking users if bot is not admin in channel, we return True or handle logic
-            # Here we assume if error occurs (like bot not admin), we skip check or fix it
-            return False 
+            return False
     return True
 
 # --- MAIN BOT HANDLERS ---
@@ -226,7 +222,6 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         (user_id, user.full_name, user.username, str(datetime.now()))
     )
 
-    # Check force join
     channels = db.execute_fetch("SELECT channel_username FROM force_join_channels")
     if channels:
         if not await check_subscription(user_id, bot):
@@ -239,7 +234,6 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 return
 
     await state.clear()
-    # Pass user_id to keyboard
     await message.answer(
         get_bengali_welcome(),
         parse_mode="Markdown",
@@ -254,7 +248,6 @@ async def process_check_join(callback: types.CallbackQuery, bot: Bot):
             await callback.message.delete()
         except:
             pass
-        # Pass user_id to keyboard
         await callback.message.answer(
             "✅ ধন্যবাদ! আপনি সফলভাবে যুক্ত হয়েছেন।",
             reply_markup=get_main_keyboard(user_id)
@@ -523,7 +516,7 @@ async def restart_bot_handler(callback: types.CallbackQuery):
 async def back_home(callback: types.CallbackQuery):
     await callback.message.edit_text(get_bengali_welcome(), parse_mode="Markdown", reply_markup=get_main_keyboard(callback.from_user.id))
 
-# --- BROADCAST SETUP (Existing Simple Setup) ---
+# --- BROADCAST SETUP ---
 
 @router.callback_query(F.data == "setup_broadcast")
 async def setup_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
@@ -592,8 +585,6 @@ async def admin_panel(callback: types.CallbackQuery):
     total_users = db.execute_fetch("SELECT COUNT(*) FROM users")[0][0]
     total_bots = db.execute_fetch("SELECT COUNT(*) FROM client_bots")[0][0]
     active_bots = len(client_bots)
-    
-    # Count channels
     channels_count = db.execute_fetch("SELECT COUNT(*) FROM force_join_channels")[0][0]
 
     text = (
@@ -614,8 +605,7 @@ async def admin_panel(callback: types.CallbackQuery):
         ])
     )
 
-# --- CHANNEL MANAGEMENT (NEW) ---
-
+# --- CHANNEL MANAGEMENT ---
 @router.callback_query(F.data == "manage_channels")
 async def manage_channels(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -663,27 +653,16 @@ async def delete_channel(callback: types.CallbackQuery):
     ch_id = int(callback.data.split("_")[-1])
     db.execute_write("DELETE FROM force_join_channels WHERE id=?", (ch_id,))
     await callback.answer("✅ চ্যানেল মুছে ফেলা হয়েছে।")
-    # Refresh
     await manage_channels(callback)
 
-
-# --- ADMIN BROADCAST SYSTEM (UPDATED) ---
-
-# FSM for Admin Broadcast
-class AdminBroadcastStates(StatesGroup):
-    waiting_content = State()
-    confirming = State()
-
-# Dictionary to store broadcast type temporarily
-bc_target_type = {}
+# --- ADMIN BROADCAST SYSTEM ---
 
 @router.callback_query(F.data.startswith("admin_broadcast_"))
 async def admin_bc_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
         return
     
-    # Determine target: 'main' or 'global'
-    target = callback.data.split("_")[-1] # 'main' or 'global'
+    target = callback.data.split("_")[-1]
     bc_target_type[callback.from_user.id] = target
     
     await state.set_state(AdminBroadcastStates.waiting_content)
@@ -709,7 +688,6 @@ async def admin_bc_content(message: Message, state: FSMContext):
     await state.update_data(bc_data=data)
     await state.set_state(AdminBroadcastStates.confirming)
     
-    # Preview Keyboard
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ হ্যাঁ, সেন্ড করুন", callback_data="admin_bc_confirm")],
         [InlineKeyboardButton(text="❌ বাতিল", callback_data="admin_panel")]
@@ -728,7 +706,6 @@ async def admin_bc_execute(callback: types.CallbackQuery, state: FSMContext):
     
     target = bc_target_type.get(callback.from_user.id, 'main')
     
-    # Fetch users
     users = set()
     if target == 'main':
         users.update([x[0] for x in db.execute_fetch("SELECT user_id FROM users")])
@@ -767,22 +744,13 @@ async def admin_restart_all(callback: types.CallbackQuery):
 
 # --- CLIENT BOT SYSTEM ---
 
-# FSM for Client Bot Broadcast
-class ClientBroadcastStates(StatesGroup):
-    waiting_content = State()
-    confirming = State()
-
 async def start_client_bot_task(token: str, bot_id: int):
-    """Task to run a single client bot."""
-    
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     
     current_task = asyncio.current_task()
     client_bots[bot_id] = {'bot': bot, 'dp': dp, 'task': current_task}
 
-    # --- Client Bot Handlers ---
-    
     @dp.message(CommandStart())
     async def client_start(message: Message):
         uid = message.from_user.id
@@ -818,13 +786,11 @@ async def start_client_bot_task(token: str, bot_id: int):
                     await message.answer(txt, reply_markup=kb)
             except TelegramBadRequest as e:
                 logger.error(f"Send error in bot {bot_id}: {e}")
-                await message.answer("⚠️ স্বাগতম বার্তা দেখাতে সমস্যা হচ্ছে।")
             except Exception as e:
                 logger.error(f"Generic send error in bot {bot_id}: {e}")
         else:
             await message.answer("👋 হ্যালো! আমি একটি বট।")
 
-    # Client Bot Broadcast with FSM
     @dp.message(Command("broadcast"))
     async def client_broadcast_start(message: Message, state: FSMContext):
         uid = message.from_user.id
@@ -915,40 +881,36 @@ async def restart_all_client_bots():
     if tasks:
         await asyncio.gather(*tasks)
 
-# --- MAIN ENTRY POINT (WEBHOOK) ---
-from aiohttp import web
+# --- KEEP ALIVE SERVER FOR RENDER ---
+# Render Free Tier স্লিপ আটকাতে এটি নিজেই নিজেকে পিং করবে।
+async def keep_alive():
+    while True:
+        await asyncio.sleep(600)  # প্রতি ১০ মিনিটে একবার
+        logger.info("Keep-alive ping...")
 
 async def on_startup(bot: Bot):
-    if WEBHOOK_HOST:
-        logger.info(f"Setting webhook: {WEBHOOK_URL}")
-        await bot.set_webhook(WEBHOOK_URL)
-    else:
-        logger.warning("No WEBHOOK_HOST found, running in polling mode (local).")
-
+    # Admin কে নোটিফিকেশন
     if ADMIN_IDS:
         try:
-            await bot.send_message(ADMIN_IDS[0], "🚀 **Bot Control Hub Started!**\n\nSystem Online.", parse_mode="Markdown")
+            await bot.send_message(ADMIN_IDS[0], "🚀 **Bot Control Hub Started!**\n\nSystem Online (Polling).", parse_mode="Markdown")
         except: pass
+    
+    # পুরাতন বটগুলো রিস্টার্ট
     asyncio.create_task(restart_all_client_bots())
+    # কিপ-এলাইভ টাস্ক শুরু
+    asyncio.create_task(keep_alive())
 
 async def on_shutdown(bot: Bot):
     logger.info("Shutting down...")
-    if WEBHOOK_HOST:
-        await bot.delete_webhook()
-    
     for bot_id, data in client_bots.items():
         try:
             if 'task' in data: data['task'].cancel()
             await data['bot'].session.close()
         except: pass
 
-async def handle_webhook(request: web.Request):
-    """Handle incoming webhook requests."""
-    bot = request.app["bot"]
-    dp = request.app["dp"]
-    update = types.Update(**await request.json())
-    await dp.feed_update(bot, update)
-    return web.Response(status=200)
+async def handle_http_request(request):
+    # HTTP রিকোয়েস্ট এলে শুধু "OK" রিটার্ন করবে (Render পোর্ট চেক করার জন্য)
+    return web.Response(text="Bot is running!")
 
 async def main():
     if not BOT_TOKEN:
@@ -963,33 +925,26 @@ async def main():
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    # Webhook App for Render
-    if WEBHOOK_HOST:
-        app = web.Application()
-        app["bot"] = bot
-        app["dp"] = dp
-        
-        app.add_routes([web.post(WEBHOOK_PATH, handle_webhook)])
-        
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
-        
-        logger.info(f"Starting Webhook Server on port {PORT}...")
-        await site.start()
-        
-        # Run forever
-        while True:
-            await asyncio.sleep(3600)
-    else:
-        # Local Polling
-        logger.info("Starting Polling...")
-        try:
-            await dp.start_polling(bot, handle_signals=True)
-        except Exception as e:
-            logger.critical(f"Main Bot Polling Error: {e}")
-        finally:
-            await bot.session.close()
+    # একটি ছোট HTTP সার্ভার Render এর Port বাইন্ডিং এর জন্য
+    app = web.Application()
+    app.add_routes([web.get("/", handle_http_request)])
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    
+    logger.info(f"Starting internal web server on port {PORT} for keep-alive...")
+    await site.start()
+
+    # মূল বট পলিং শুরু
+    logger.info("Starting Main Bot Polling...")
+    try:
+        await dp.start_polling(bot, handle_signals=True)
+    except Exception as e:
+        logger.critical(f"Main Bot Polling Error: {e}")
+    finally:
+        await bot.session.close()
+        await runner.cleanup()
 
 if __name__ == "__main__":
     try:
