@@ -10,8 +10,8 @@ from config import MAIN_ADMIN_ID
 logger = logging.getLogger(__name__)
 router = Router()
 
-# --- States ---
-class Form(StatesClass):
+# --- FIX: Define States Correctly ---
+class Form(StatesGroup):
     start = State()
     token = State()
     image = State()
@@ -21,8 +21,8 @@ class Form(StatesClass):
     broadcast_setup = State()
     admin_broadcast = State()
 
-class ClientForm(StatesClass):
-    menu = State()
+class AdminForm(StatesGroup):
+    broadcast = State()
 
 # --- Keyboards ---
 def main_menu_kb():
@@ -83,7 +83,8 @@ async def recheck_join(callback: CallbackQuery, bot: Bot):
     sub_status = await check_subscription(callback.from_user.id, bot)
     if sub_status is True:
         await callback.message.delete()
-        await cmd_start(callback.message, None, bot) # Redirect to start
+        # Create a fake message object to reuse cmd_start logic or just send menu
+        await callback.message.answer("✅ ধন্যবাদ জয়েন করার জন্য!", reply_markup=main_menu_kb())
     else:
         await callback.answer("❌ আপনি এখনো জয়েন করেননি!", show_alert=True)
 
@@ -172,7 +173,7 @@ async def process_btn_details(message: Message, state: FSMContext):
         user_data = await state.get_data()
         db.save_welcome(user_data['bot_id'], user_data['image_id'], user_data['welcome_text'], buttons)
         
-        # Load the client bot immediately (Implemented in main.py logic usually, but here we trigger update)
+        # Load the client bot immediately
         from client_instance import load_client_bot
         await load_client_bot(user_data['token'])
         
@@ -207,8 +208,6 @@ async def setup_broadcast(callback: CallbackQuery, state: FSMContext):
 async def save_broadcast_admins(message: Message, state: FSMContext):
     try:
         ids = [x.strip() for x in message.text.split(',')]
-        # Assume last bot added is the one to configure (simplified for flow)
-        # In production, you'd select a bot first.
         bots = db.get_user_bots(message.from_user.id)
         if not bots:
             await message.answer("প্রথমে একটি বট যোগ করুন।")
@@ -229,7 +228,3 @@ async def admin_stats(callback: CallbackQuery):
     
     users, bots = db.total_stats()
     await callback.message.edit_text(f"📊 <b>Statistics</b>\n\n👤 Total Users: {users}\n🤖 Total Bots: {bots}", reply_markup=admin_panel_kb())
-
-# --- Admin Broadcast (To Controller Users) ---
-# Implementation similar to client broadcast but targeting 'users' table.
-# Skipping full code for brevity but follows same logic as below.
