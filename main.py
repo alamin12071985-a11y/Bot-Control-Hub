@@ -1373,7 +1373,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
-def main():
+async def main():
     """Main function to run the bot."""
     try:
         # Check for bot token
@@ -1382,7 +1382,7 @@ def main():
             return
         
         # Initialize database
-        asyncio.run(init_database())
+        await init_database()
         
         # Create application with simplified builder
         application = (
@@ -1481,13 +1481,30 @@ def main():
         # Add error handler
         application.add_error_handler(error_handler)
         
-        # Start the bot
-        logger.info("🤖 Bot Control Hub is running...")
-        application.run_polling()
+        # Start the bot using async pattern
+        logger.info("🤖 Bot Control Hub is starting...")
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        # Keep the bot running
+        logger.info("Bot is running. Press Ctrl+C to stop.")
+        try:
+            # Wait indefinitely
+            stop_signal = asyncio.Event()
+            await stop_signal.wait()
+        except KeyboardInterrupt:
+            logger.info("Received stop signal, shutting down...")
+        finally:
+            # Graceful shutdown
+            await application.updater.stop()
+            await application.stop()
+            await application.shutdown()
+            logger.info("Bot stopped.")
         
     except Exception as e:
         logger.error(f"Main function error: {e}")
         raise
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
