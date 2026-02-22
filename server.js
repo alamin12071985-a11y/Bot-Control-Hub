@@ -19,7 +19,7 @@ app.use(cors());
 const PORT = process.env.PORT || 3000;
 const MAIN_BOT_TOKEN = process.env.MAIN_BOT_TOKEN;
 const DATABASE_URL = "https://bot-control-hub-eee53-default-rtdb.firebaseio.com";
-const ADMIN_IDS = ['YOUR_TELEGRAM_ID']; // এখানে আপনার টেলিগ্রাম ID বসান (স্ট্রিং আকারে)
+const ADMIN_IDS = ['7605281774']; // এখানে আপনার টেলিগ্রাম ID বসান (স্ট্রিং আকারে)
 
 // Global Error Catching
 process.on('uncaughtException', (err) => {
