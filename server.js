@@ -1,292 +1,251 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
+const admin = require('firebase-admin');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const app = express();
 app.use(express.json());
-app.use(cors({ origin: '*' }));
+app.use(cors());
 
-// --- CONFIGURATION ---
-const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGODB_URI || "mongodb+srv://hellokaiiddo:0Mgb6Peq3UlsNpCD@cluster0.azbh81j.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
-const MAIN_BOT_TOKEN = process.env.MAIN_BOT_TOKEN;
+// --- 1. FIREBASE SETUP ---
+// Note: In Render, paste the entire Service Account JSON into the FIREBASE_SERVICE_ACCOUNT env var
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+const DATABASE_URL = process.env.DATABASE_URL;
 
-const client = new MongoClient(MONGO_URI, {
-    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: DATABASE_URL
 });
 
-let db, usersCol, botsCol, botSubscribersCol, sessionsCol;
-let activeBots = {}; // Store running Telegraf instances
+const db = admin.database();
+const botsRef = db.ref("bots");
+const usersRef = db.ref("users");
+const sessionsRef = db.ref("sessions");
+const subsRef = db.ref("subscribers");
 
-// --- DATABASE CONNECTION ---
-async function connectDB() {
-    try {
-        await client.connect();
-        db = client.db("BotControlHub");
-        usersCol = db.collection("users");
-        botsCol = db.collection("bots");
-        botSubscribersCol = db.collection("bot_subscribers");
-        sessionsCol = db.collection("sessions");
-        console.log("✅ MongoDB Connected");
-        
-        initMainBot();
-        resumeBots(); // Restart bots that were running
-    } catch (err) {
-        console.error("❌ MongoDB Error:", err);
-    }
-}
+let activeBots = {}; // Tracking running instances
 
-// --- MAIN CONTROLLER BOT LOGIC ---
+// --- 2. MAIN CONTROLLER BOT ---
+const MAIN_BOT_TOKEN = process.env.MAIN_BOT_TOKEN;
 const mainBot = new Telegraf(MAIN_BOT_TOKEN);
 
-function initMainBot() {
-    // Middleware to track/create user
-    mainBot.use(async (ctx, next) => {
-        if (ctx.from) {
-            await usersCol.updateOne(
-                { userId: ctx.from.id },
-                { $set: { username: ctx.from.username, lastSeen: new Date() } },
-                { upsert: true }
-            );
-        }
-        return next();
+// Dashboard Keyboard
+const mainKeyboard = Markup.keyboard([
+    ['🤖 My Bots', '➕ Add New Bot'],
+    ['📢 Broadcast Setup', '❓ Help']
+]).resize();
+
+mainBot.start(async (ctx) => {
+    const uid = ctx.from.id.toString();
+    await usersRef.child(uid).update({
+        username: ctx.from.username || "N/A",
+        name: ctx.from.first_name,
+        lastSeen: Date.now()
     });
+    await sessionsRef.child(uid).remove(); // Clear stuck sessions
+    ctx.reply(`👋 Welcome to Bot Control Hub!\n\nUse the menu below to manage your bots.`, mainKeyboard);
+});
 
-    mainBot.start(async (ctx) => {
-        await sessionsCol.deleteOne({ userId: ctx.from.id }); // Clear any stuck setup
-        ctx.reply(`👋 Welcome to Bot Control Hub!\n\nManage your Telegram bot empire from here.`, 
-            Markup.keyboard([
-                ['🤖 My Bots', '➕ Add New Bot'],
-                ['📢 Broadcast Setup', '❓ Help']
-            ]).resize()
-        );
-    });
+// --- ADD BOT WIZARD ---
+mainBot.hears('➕ Add New Bot', async (ctx) => {
+    await sessionsRef.child(ctx.from.id.toString()).set({ step: 'WAITING_TOKEN' });
+    ctx.reply("✨ Step 1: Send me your Bot Token from @BotFather.");
+});
 
-    mainBot.hears('❓ Help', (ctx) => {
-        ctx.reply("Need assistance? Contact our admin.", Markup.inlineKeyboard([
-            [Markup.button.url('Contact Admin', 'https://t.me/your_admin_username')]
-        ]));
-    });
+mainBot.on('text', async (ctx) => {
+    const uid = ctx.from.id.toString();
+    const sessionSnap = await sessionsRef.child(uid).once('value');
+    const session = sessionSnap.val();
+    if (!session) return;
 
-    // --- ADD BOT WIZARD ---
-    mainBot.hears('➕ Add New Bot', async (ctx) => {
-        await sessionsCol.updateOne(
-            { userId: ctx.from.id },
-            { $set: { step: 'WAITING_TOKEN' } },
-            { upsert: true }
-        );
-        ctx.reply("Step 1: Please send me your Bot Token from @BotFather.");
-    });
+    const input = ctx.message.text.trim();
 
-    mainBot.on('text', async (ctx) => {
-        const session = await sessionsCol.findOne({ userId: ctx.from.id });
-        if (!session) return;
-
-        if (session.step === 'WAITING_TOKEN') {
-            const token = ctx.message.text.trim();
-            try {
-                const tempBot = new Telegraf(token);
-                const botInfo = await tempBot.telegram.getMe();
-                await sessionsCol.updateOne({ userId: ctx.from.id }, { 
-                    $set: { step: 'WAITING_IMAGE', token, botName: botInfo.first_name, botUsername: botInfo.username } 
-                });
-                ctx.reply(`✅ Token valid for @${botInfo.username}\n\nStep 2: Send a Welcome Image (or send /skip).`);
-            } catch (e) {
-                ctx.reply("❌ Invalid token. Please try again.");
-            }
-        } 
-        else if (session.step === 'WAITING_TEXT') {
-            await sessionsCol.updateOne({ userId: ctx.from.id }, { 
-                $set: { step: 'WAITING_BUTTON_COUNT', welcomeText: ctx.message.text } 
+    if (session.step === 'WAITING_TOKEN') {
+        try {
+            const tempBot = new Telegraf(input);
+            const info = await tempBot.telegram.getMe();
+            await sessionsRef.child(uid).update({ 
+                step: 'WAITING_IMAGE', token: input, botName: info.first_name, botUsername: info.username 
             });
-            ctx.reply("Step 4: How many buttons do you want? (Enter 0-3)");
+            ctx.reply(`✅ Valid: @${info.username}\n\nStep 2: Send a Welcome Image (or send /skip).`);
+        } catch (e) {
+            ctx.reply("❌ Invalid Token! Please send a correct token.");
         }
-        else if (session.step === 'WAITING_BUTTON_COUNT') {
-            const count = parseInt(ctx.message.text);
-            if (isNaN(count) || count < 0 || count > 3) return ctx.reply("Please enter a number between 0 and 3.");
-            
-            if (count === 0) {
-                await finalizeBotCreation(ctx, session, []);
-            } else {
-                await sessionsCol.updateOne({ userId: ctx.from.id }, { 
-                    $set: { step: 'WAITING_BUTTON_DATA', btnCount: count, btns: [], currentBtn: 1 } 
-                });
-                ctx.reply(`Send Name and URL for Button 1 (Format: Name | URL)`);
-            }
+    } 
+    else if (session.step === 'WAITING_TEXT') {
+        await sessionsRef.child(uid).update({ step: 'WAITING_BTN_COUNT', welcomeText: input });
+        ctx.reply("Step 4: How many buttons do you want? (0-3)");
+    }
+    else if (session.step === 'WAITING_BTN_COUNT') {
+        const count = parseInt(input);
+        if (isNaN(count) || count < 0 || count > 3) return ctx.reply("Please enter a number between 0 and 3.");
+        
+        if (count === 0) {
+            finalizeBot(ctx, session, []);
+        } else {
+            await sessionsRef.child(uid).update({ step: 'WAITING_BTN_DATA', btnCount: count, btns: [] });
+            ctx.reply(`Send details for Button 1\nFormat: Button Name | URL`);
         }
-        else if (session.step === 'WAITING_BUTTON_DATA') {
-            const parts = ctx.message.text.split('|');
-            if (parts.length < 2) return ctx.reply("Format: Name | URL");
-            
-            const btns = session.btns || [];
-            btns.push({ text: parts[0].trim(), url: parts[1].trim() });
-            
-            if (btns.length >= session.btnCount) {
-                await finalizeBotCreation(ctx, session, btns);
-            } else {
-                const nextNum = btns.length + 1;
-                await sessionsCol.updateOne({ userId: ctx.from.id }, { $set: { btns } });
-                ctx.reply(`Send Name and URL for Button ${nextNum} (Format: Name | URL)`);
-            }
+    }
+    else if (session.step === 'WAITING_BTN_DATA') {
+        const parts = input.split('|');
+        if (parts.length < 2) return ctx.reply("❌ Invalid format! Use: Name | URL");
+        
+        let btns = session.btns || [];
+        btns.push({ text: parts[0].trim(), url: parts[1].trim() });
+        
+        if (btns.length >= session.btnCount) {
+            finalizeBot(ctx, session, btns);
+        } else {
+            await sessionsRef.child(uid).update({ btns });
+            ctx.reply(`Send details for Button ${btns.length + 1}\nFormat: Name | URL`);
         }
-    });
+    }
+});
 
-    mainBot.on(['photo', 'message'], async (ctx) => {
-        const session = await sessionsCol.findOne({ userId: ctx.from.id });
-        if (session?.step === 'WAITING_IMAGE') {
-            const fileId = ctx.message.photo ? ctx.message.photo[ctx.message.photo.length - 1].file_id : null;
-            if (ctx.message.text === '/skip') {
-                await sessionsCol.updateOne({ userId: ctx.from.id }, { $set: { step: 'WAITING_TEXT', welcomeImage: null } });
-            } else if (fileId) {
-                await sessionsCol.updateOne({ userId: ctx.from.id }, { $set: { step: 'WAITING_TEXT', welcomeImage: fileId } });
-            } else {
-                return ctx.reply("Please send a photo or /skip.");
-            }
-            ctx.reply("Step 3: Send the Welcome Message text.");
-        }
-    });
+mainBot.on(['photo', 'message'], async (ctx) => {
+    const uid = ctx.from.id.toString();
+    const sessionSnap = await sessionsRef.child(uid).once('value');
+    const session = sessionSnap.val();
 
-    // --- MY BOTS PANEL ---
-    mainBot.hears('🤖 My Bots', async (ctx) => {
-        const userBots = await botsCol.find({ ownerId: ctx.from.id }).toArray();
-        if (userBots.length === 0) return ctx.reply("You haven't added any bots yet.");
+    if (session?.step === 'WAITING_IMAGE') {
+        const fileId = ctx.message.photo ? ctx.message.photo[ctx.message.photo.length - 1].file_id : null;
+        if (!fileId && ctx.message.text !== '/skip') return ctx.reply("Please send a photo or /skip.");
+        
+        await sessionsRef.child(uid).update({ step: 'WAITING_TEXT', welcomeImage: fileId || null });
+        ctx.reply("Step 3: Send the Welcome Message text.");
+    }
+});
 
-        userBots.forEach(bot => {
-            ctx.reply(`Bot: ${bot.botName} (@${bot.botUsername})\nStatus: ${bot.status}`, 
-                Markup.inlineKeyboard([
-                    [Markup.button.callback('Start', `start_${bot._id}`), Markup.button.callback('Stop', `stop_${bot._id}`)],
-                    [Markup.button.callback('Delete', `del_${bot._id}`)]
-                ])
-            );
-        });
-    });
-
-    // --- ACTIONS ---
-    mainBot.action(/start_(.+)/, async (ctx) => {
-        const botId = ctx.match[1];
-        await launchClientBot(botId);
-        ctx.answerCbQuery("Bot Started");
-        ctx.editMessageText("Status: RUNNING");
-    });
-
-    mainBot.action(/stop_(.+)/, async (ctx) => {
-        const botId = ctx.match[1];
-        await stopClientBot(botId);
-        ctx.answerCbQuery("Bot Stopped");
-        ctx.editMessageText("Status: STOPPED");
-    });
-
-    mainBot.action(/del_(.+)/, async (ctx) => {
-        const botId = ctx.match[1];
-        await stopClientBot(botId);
-        await botsCol.deleteOne({ _id: new ObjectId(botId) });
-        ctx.answerCbQuery("Bot Deleted");
-        ctx.deleteMessage();
-    });
-
-    mainBot.launch();
-}
-
-async function finalizeBotCreation(ctx, session, buttons) {
-    const newBot = {
+async function finalizeBot(ctx, session, buttons) {
+    const botRef = botsRef.push();
+    const botData = {
+        id: botRef.key,
         ownerId: ctx.from.id,
         token: session.token,
         botName: session.botName,
         botUsername: session.botUsername,
-        welcomeImage: session.welcomeImage,
+        welcomeImage: session.welcomeImage || null,
         welcomeText: session.welcomeText,
         buttons: buttons,
         status: 'RUN',
-        createdAt: new Date(),
         admins: [ctx.from.id]
     };
-    const res = await botsCol.insertOne(newBot);
-    await sessionsCol.deleteOne({ userId: ctx.from.id });
-    ctx.reply(`✅ Bot @${session.botUsername} created and launched!`);
-    launchClientBot(res.insertedId.toString());
+
+    await botRef.set(botData);
+    await sessionsRef.child(ctx.from.id.toString()).remove();
+    ctx.reply(`🎉 Bot @${session.botUsername} successfully created and launched!`);
+    startClientBot(botData);
 }
 
-// --- CLIENT BOT ENGINE ---
-async function launchClientBot(dbId) {
-    const botCfg = await botsCol.findOne({ _id: new ObjectId(dbId) });
-    if (!botCfg || activeBots[dbId]) return;
+// --- MY BOTS MANAGEMENT ---
+mainBot.hears('🤖 My Bots', async (ctx) => {
+    const snap = await botsRef.orderByChild('ownerId').equalTo(ctx.from.id).once('value');
+    const bots = snap.val();
+    if (!bots) return ctx.reply("You don't have any bots yet.");
 
-    const instance = new Telegraf(botCfg.token);
-
-    instance.start(async (ctx) => {
-        // Track subscribers
-        await botSubscribersCol.updateOne(
-            { botId: dbId, userId: ctx.from.id },
-            { $set: { username: ctx.from.username, joinedAt: new Date() } },
-            { upsert: true }
+    for (let key in bots) {
+        const b = bots[key];
+        ctx.reply(`Bot: ${b.botName}\nUser: @${b.botUsername}\nStatus: ${b.status}`, 
+            Markup.inlineKeyboard([
+                [Markup.button.callback('⏹ Stop', `stop_${b.id}`), Markup.button.callback('▶️ Start', `start_${b.id}`)],
+                [Markup.button.callback('🗑 Delete', `del_${b.id}`)]
+            ])
         );
+    }
+});
 
-        const keyboard = botCfg.buttons.length > 0 
-            ? Markup.inlineKeyboard(botCfg.buttons.map(b => [Markup.button.url(b.text, b.url)]))
-            : null;
+mainBot.action(/start_(.+)/, async (ctx) => {
+    const bid = ctx.match[1];
+    const snap = await botsRef.child(bid).once('value');
+    startClientBot(snap.val());
+    await botsRef.child(bid).update({ status: 'RUN' });
+    ctx.answerCbQuery("Bot Started");
+});
 
-        if (botCfg.welcomeImage) {
-            await ctx.replyWithPhoto(botCfg.welcomeImage, { caption: botCfg.welcomeText, ...keyboard });
+mainBot.action(/stop_(.+)/, async (ctx) => {
+    const bid = ctx.match[1];
+    if (activeBots[bid]) {
+        activeBots[bid].stop();
+        delete activeBots[bid];
+    }
+    await botsRef.child(bid).update({ status: 'STOP' });
+    ctx.answerCbQuery("Bot Stopped");
+});
+
+mainBot.action(/del_(.+)/, async (ctx) => {
+    const bid = ctx.match[1];
+    if (activeBots[bid]) activeBots[bid].stop();
+    await botsRef.child(bid).remove();
+    ctx.deleteMessage();
+});
+
+// --- 3. CLIENT BOT LOGIC ---
+function startClientBot(config) {
+    if (activeBots[config.id]) return;
+
+    const bot = new Telegraf(config.token);
+
+    bot.start(async (ctx) => {
+        // Log Subscriber
+        await subsRef.child(config.id).child(ctx.from.id.toString()).set({
+            name: ctx.from.first_name,
+            username: ctx.from.username || "N/A"
+        });
+
+        const kb = config.buttons ? config.buttons.map(b => [Markup.button.url(b.text, b.url)]) : [];
+        const extra = kb.length > 0 ? Markup.inlineKeyboard(kb) : {};
+
+        if (config.welcomeImage) {
+            ctx.replyWithPhoto(config.welcomeImage, { caption: config.welcomeText, ...extra });
         } else {
-            await ctx.reply(botCfg.welcomeText, keyboard);
+            ctx.reply(config.welcomeText, extra);
         }
     });
 
-    // Broadcast Command for Client Bot
-    instance.command('broadcast', async (ctx) => {
-        if (!botCfg.admins.includes(ctx.from.id)) return;
-        ctx.reply("Please send the message you want to broadcast to ALL users.");
-        // Simple broadcast listener implementation
-        instance.on('message', async (bCtx) => {
-            if (bCtx.from.id !== ctx.from.id) return;
-            const subscribers = await botSubscribersCol.find({ botId: dbId }).toArray();
-            let success = 0;
-            for (const sub of subscribers) {
+    // Broadcast Command
+    bot.command('broadcast', (ctx) => {
+        if (!config.admins.includes(ctx.from.id)) return;
+        ctx.reply("Please reply to this message with the content you want to broadcast.");
+        
+        bot.on('message', async (msgCtx) => {
+            if (msgCtx.from.id !== ctx.from.id) return;
+            const usersSnap = await subsRef.child(config.id).once('value');
+            const users = usersSnap.val();
+            if (!users) return msgCtx.reply("No users found to broadcast to.");
+
+            let sentCount = 0;
+            for (let uid in users) {
                 try {
-                    await bCtx.copyMessage(sub.userId);
-                    success++;
+                    await msgCtx.copyMessage(uid);
+                    sentCount++;
                 } catch (e) {}
             }
-            bCtx.reply(`📢 Broadcast Finished!\nSent to: ${success} users.`);
-            return; // Exit listener after one broadcast
+            msgCtx.reply(`📢 Broadcast Complete! Sent to ${sentCount} users.`);
         });
     });
 
-    instance.launch().catch(err => console.error(`Error launching ${botCfg.botUsername}:`, err));
-    activeBots[dbId] = instance;
-    await botsCol.updateOne({ _id: new ObjectId(dbId) }, { $set: { status: 'RUN' } });
+    bot.launch().catch(err => console.error("Bot launch failed", err));
+    activeBots[config.id] = bot;
 }
 
-async function stopClientBot(dbId) {
-    if (activeBots[dbId]) {
-        activeBots[dbId].stop('SIGTERM');
-        delete activeBots[dbId];
+// Auto-Resume Bots
+const init = async () => {
+    const snap = await botsRef.once('value');
+    const bots = snap.val();
+    if (bots) {
+        for (let key in bots) {
+            if (bots[key].status === 'RUN') startClientBot(bots[key]);
+        }
     }
-    await botsCol.updateOne({ _id: new ObjectId(dbId) }, { $set: { status: 'STOP' } });
-}
+    mainBot.launch();
+    console.log("🚀 Control Hub is Online");
+};
 
-async function resumeBots() {
-    const bots = await botsCol.find({ status: 'RUN' }).toArray();
-    for (const b of bots) {
-        await launchClientBot(b._id.toString());
-    }
-}
+init();
 
-// --- SERVER & INITIALIZATION ---
-app.get('/', (req, res) => res.send('Bot Control Hub API Running'));
-
-connectDB().then(() => {
-    app.listen(PORT, () => console.log(`⚡ Server listening on port ${PORT}`));
-});
-
-// Graceful shutdown
-process.once('SIGINT', () => {
-    mainBot.stop('SIGINT');
-    Object.values(activeBots).forEach(b => b.stop('SIGINT'));
-});
-process.once('SIGTERM', () => {
-    mainBot.stop('SIGTERM');
-    Object.values(activeBots).forEach(b => b.stop('SIGTERM'));
-});
+// --- 4. EXPRESS SERVER ---
+app.get('/', (req, res) => res.send('Bot Control Hub is running...'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
