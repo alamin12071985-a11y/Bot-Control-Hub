@@ -1,7 +1,7 @@
 {
-  "name": "bot-control-hub",
-  "version": "1.1.0",
-  "description": "Telegram Bot SaaS with Firebase",
+  "name": "bot-control-hub-pro",
+  "version": "1.2.0",
+  "description": "Telegram Bot Hosting SaaS with Firebase",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
