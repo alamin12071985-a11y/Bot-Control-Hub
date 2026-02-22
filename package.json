@@ -1,0 +1,16 @@
+{
+  "name": "bot-control-hub",
+  "version": "2.0.0",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "mongodb": "^6.6.2",
+    "telegraf": "^4.16.3",
+    "cors": "^2.8.5"
+  }
+}
