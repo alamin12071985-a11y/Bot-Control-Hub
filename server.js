@@ -1,12 +1,12 @@
 /**
- * PROJECT: Bot Control Hub (SaaS)
- * AUTHOR: Rebuilt for @lagatech
- * VERSION: 2.0.0
+ * PROJECT: Bot Control Hub (SaaS) - Rebuilt & Fixed
+ * AUTHOR: @lagatech
+ * VERSION: 2.1.0 (Bangla Edition)
  * DATABASE: Firebase Realtime DB
  */
 
 require('dotenv').config();
-const { Telegraf, Markup, session } = require('telegraf');
+const { Telegraf, Markup, session, Scenes } = require('telegraf');
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
@@ -19,8 +19,9 @@ app.use(cors());
 const PORT = process.env.PORT || 3000;
 const MAIN_BOT_TOKEN = process.env.MAIN_BOT_TOKEN;
 const DATABASE_URL = "https://bot-control-hub-eee53-default-rtdb.firebaseio.com";
+const ADMIN_IDS = ['YOUR_TELEGRAM_ID']; // এখানে আপনার টেলিগ্রাম ID বসান (স্ট্রিং আকারে)
 
-// Global Error Catching - Prevents the entire server from crashing on a single bot error
+// Global Error Catching
 process.on('uncaughtException', (err) => {
     console.error('CRITICAL ERROR (Uncaught):', err);
 });
@@ -52,7 +53,7 @@ try {
     console.log("✅ Firebase Admin SDK Connected Successfully");
 } catch (error) {
     console.error("❌ Firebase Connection Failed:", error.message);
-    process.exit(1); 
+    process.exit(1);
 }
 
 // Memory storage for active Telegraf instances
@@ -61,40 +62,39 @@ let activeBots = {};
 // --- 3. MAIN CONTROLLER BOT LOGIC ---
 const mainBot = new Telegraf(MAIN_BOT_TOKEN);
 
-// Set Menu Commands for Main Bot
+// Set Menu Commands
 mainBot.telegram.setMyCommands([
     { command: 'start', description: 'মূল ড্যাশবোর্ড চালু করুন' },
-    { command: 'help', description: 'সহযোগিতা ও এডমিন কন্টাক্ট' },
-    { command: 'stats', description: 'আপনার বটের পরিসংখ্যান' }
+    { command: 'help', description: 'সহযোগিতা ও এডমিন কন্টাক্ট' }
 ]);
 
-// Utility Keyboard
+// Utility Keyboards
 const mainKeyboard = Markup.keyboard([
-    ['🤖 My Bots', '➕ Add New Bot'],
-    ['📊 Statistics', '❓ Help']
+    ['🤖 My Bots', '➕ New Bot'],
+    ['📢 Broadcast Setup', '📊 Statistics'],
+    ['🛠 Admin Panel']
 ]).resize();
 
 // --- START COMMAND ---
 mainBot.start(async (ctx) => {
     try {
         const uid = ctx.from.id.toString();
-        // Update user info in DB
         await usersRef.child(uid).update({
             username: ctx.from.username || "N/A",
             name: ctx.from.first_name,
-            lastSeen: Date.now(),
-            isPremium: false
+            lastSeen: Date.now()
         });
 
-        // Clear any stuck setup session
-        await sessionsRef.child(uid).remove();
+        await sessionsRef.child(uid).remove(); // Clear previous sessions
 
         const welcomeMsg = 
-            `👋 *স্বাগতম Bot Control Hub-এ!*\n\n` +
-            `এখানে আপনি খুব সহজেই নিজের টেলিগ্রাম বট তৈরি এবং পরিচালনা করতে পারবেন।\n\n` +
-            `🚀 *শুরু করতে নিচের বাটন ব্যবহার করুন:*`;
+            `👋 *হ্যালো বন্ধু!* স্বাগতম বট কন্ট্রোল হাবে!\n\n` +
+            `এখানে তুমি নিজের খুব সহজেই টেলিগ্রাম বট বানাতে পারবে। একদম পানির মতো সহজ! 😄\n\n` +
+            `নিচের বাটনে ক্লিক করে শুরু করো তো! 👇`;
         
-        ctx.replyWithMarkdownV2(welcomeMsg.replace(/[-]/g, '\\-').replace(/[!]/g, '\\!').replace(/[.]/g, '\\.'), mainKeyboard);
+        ctx.replyWithMarkdown(welcomeMsg, Markup.inlineKeyboard([
+            [Markup.button.callback('🚀 Get Started', 'start_menu')]
+        ]));
     } catch (e) {
         console.error("MainBot Start Error:", e);
     }
@@ -103,25 +103,101 @@ mainBot.start(async (ctx) => {
 // --- HELP COMMAND ---
 mainBot.help((ctx) => {
     ctx.reply(
-        `❓ *সাহায্য প্রয়োজন?*\n\n` +
-        `বট তৈরি করতে সমস্যা হলে বা কোনো ফিচারের জন্য আমাদের সাথে যোগাযোগ করুন।\n\n` +
+        `❓ *সাহায্য চাই?*\n\n` +
+        `বট বানাতে গেলে কোনো সমস্যা হলে বা মাথা খারাপ হয়ে গেলে এখানে এসো! 😂\n\n` +
         `👨‍💻 *এডমিন:* @lagatech\n` +
         `📢 *আপডেট চ্যানেল:* @lagatech_updates`,
         Markup.inlineKeyboard([
-            [Markup.button.url('Message Admin', 'https://t.me/lagatech')],
-            [Markup.button.url('Join Support Group', 'https://t.me/lagatech')]
+            [Markup.button.url('💬 Message Admin', 'https://t.me/lagatech')]
         ])
     );
 });
 
-// --- STATISTICS ---
+// --- CALLBACK HANDLERS ---
+mainBot.action('start_menu', async (ctx) => {
+    ctx.editMessageReplyMarkup(undefined);
+    ctx.reply('🏠 মেনু থেকে যা ইচ্ছে তা করো!', mainKeyboard);
+});
+
+// --- MAIN MENU HANDLERS ---
+
+// 1. MY BOTS
+mainBot.hears('🤖 My Bots', async (ctx) => {
+    try {
+        const snap = await botsRef.orderByChild('ownerId').equalTo(ctx.from.id).once('value');
+        const bots = snap.val();
+
+        if (!bots) return ctx.reply("☹️ তুমি এখনো কোনো বট বানাওনি! '➕ New Bot' বাটনে ক্লিক করো।");
+
+        ctx.reply("📦 তোমার বটের তালিকা নিচে দেওয়া হলো:");
+
+        for (let key in bots) {
+            const b = bots[key];
+            ctx.reply(
+                `🤖 *বট:* ${b.botName}\n` +
+                `🔗 *ইউজার:* @${b.botUsername}\n` +
+                `📊 *স্ট্যাটাস:* ${b.status === 'RUN' ? '✅ চলছে' : '❌ বন্ধ'}`,
+                Markup.inlineKeyboard([
+                    [Markup.button.callback('📝 Edit Welcome', `edit_${b.id}`)],
+                    [Markup.button.callback('🗑 Delete Bot', `delete_${b.id}`)]
+                ], { parse_mode: 'Markdown' })
+            );
+        }
+    } catch (e) {
+        console.error(e);
+        ctx.reply("বটের তালিকা আনতে সমস্যা হলো!");
+    }
+});
+
+// 2. NEW BOT WIZARD (Step-by-Step)
+mainBot.hears('➕ New Bot', async (ctx) => {
+    const uid = ctx.from.id.toString();
+    await sessionsRef.child(uid).set({ step: 'WAIT_TOKEN', startTime: Date.now() });
+    ctx.reply(
+        `✨ *ধাপ ১: বট টোকেন*\n\n` +
+        `@BotFather থেকে তোমার বটের API Token টা নিয়ে এখানে পাঠাও।\n` +
+        `(টোকেনটা কাউকে দিবে না কিন্তু! 🤫)`,
+        { parse_mode: 'Markdown' }
+    );
+});
+
+// 3. BROADCAST SETUP
+mainBot.hears('📢 Broadcast Setup', async (ctx) => {
+    const botsSnap = await botsRef.orderByChild('ownerId').equalTo(ctx.from.id).once('value');
+    if (!botsSnap.exists()) return ctx.reply("☹️ তুমি কোনো বট বানাওনি!");
+
+    const bots = botsSnap.val();
+    const btns = [];
+    for (let key in bots) {
+        btns.push([Markup.button.callback(`🤖 ${bots[key].botName}`, `bc_setup_${bots[key].id}`)]);
+    }
+    
+    ctx.reply("কোন বটের জন্য ব্রডকাস্ট সেটআপ করতে চাও?", Markup.inlineKeyboard(btns));
+});
+
+mainBot.action(/bc_setup_(.+)/, async (ctx) => {
+    const bid = ctx.match[1];
+    const uid = ctx.from.id.toString();
+    
+    await sessionsRef.child(uid).update({ step: 'BC_SET_ADMINS', botId: bid });
+    ctx.editMessageText(
+        `📢 *ব্রডকাস্ট এডমিন সেটআপ*\n\n` +
+        `এখন তুমি যাদেরকে এই বটে ব্রডকাস্ট পাঠানোর অনুমতি দিতে চাও, তাদের *টেলিগ্রাম ID* পাঠাও।\n\n` +
+        `একাধিক ID হলে কমা (,) দিয়ে আলাদা করো।\n` +
+        `উদাহরণ: 12345678, 98765432`,
+        { parse_mode: 'Markdown' }
+    );
+    ctx.answerCbQuery();
+});
+
+// 4. STATISTICS
 mainBot.hears('📊 Statistics', async (ctx) => {
     try {
         const uid = ctx.from.id.toString();
         const botsSnap = await botsRef.orderByChild('ownerId').equalTo(ctx.from.id).once('value');
         const bots = botsSnap.val();
         
-        if (!bots) return ctx.reply("আপনার কোনো একটিভ বট নেই।");
+        if (!bots) return ctx.reply("তোমার কোনো একটিভ বট নেই।");
 
         let totalSubs = 0;
         let botCount = Object.keys(bots).length;
@@ -132,9 +208,10 @@ mainBot.hears('📊 Statistics', async (ctx) => {
         }
 
         ctx.reply(
-            `📊 *আপনার অ্যাকাউন্টের তথ্য:*\n\n` +
+            `📊 *তোমার হিসাব-নিকাশ:*\n\n` +
             `🤖 মোট বট: ${botCount} টি\n` +
-            `👥 মোট ইউজার (সকল বটে): ${totalSubs} জন`,
+            `👥 মোট ইউজার: ${totalSubs} জন\n\n` +
+            `খুব ভালো! আরো বট বানাও! 😄`,
             { parse_mode: 'Markdown' }
         );
     } catch (e) {
@@ -142,19 +219,50 @@ mainBot.hears('📊 Statistics', async (ctx) => {
     }
 });
 
-// --- ADD BOT WIZARD (STEP-BY-STEP) ---
-mainBot.hears('➕ Add New Bot', async (ctx) => {
-    const uid = ctx.from.id.toString();
-    await sessionsRef.child(uid).set({ step: 'WAIT_TOKEN', startTime: Date.now() });
-    
-    ctx.reply(
-        `✨ *ধাপ ১: বট টোকেন*\n\n` +
-        `@BotFather থেকে পাওয়া আপনার বটের API Token-টি এখানে পাঠান।`,
-        { parse_mode: 'Markdown' }
+// 5. ADMIN PANEL
+mainBot.hears('🛠 Admin Panel', async (ctx) => {
+    if (!ADMIN_IDS.includes(ctx.from.id.toString())) {
+        return ctx.reply("🚫 মাফ করবে, এই প্যানেলটি শুধু বস দেখতে পারবে! 😎");
+    }
+
+    ctx.reply("🛠 *এডমিন প্যানেলে স্বাগতম বস!*", 
+        Markup.inlineKeyboard([
+            [Markup.button.callback('📊 ওভারভিউ স্ট্যাটস', 'admin_stats')],
+            [Markup.button.callback('📢 মেইন ব্রডকাস্ট', 'admin_broadcast')]
+        ])
     );
 });
 
-// Logic Handler for Wizard Steps
+mainBot.action('admin_stats', async (ctx) => {
+    const uSnap = await usersRef.once('value');
+    const bSnap = await botsRef.once('value');
+    
+    let totalClientUsers = 0;
+    const allBots = bSnap.val();
+    if (allBots) {
+        for (let key in allBots) {
+            const sSnap = await subsRef.child(allBots[key].id).once('value');
+            if (sSnap.exists()) totalClientUsers += Object.keys(sSnap.val()).length;
+        }
+    }
+
+    ctx.editMessageText(
+        `📊 *সিস্টেম ওভারভিউ:*\n\n` +
+        `👥 হাব ইউজার: ${uSnap.exists() ? Object.keys(uSnap.val()).length : 0}\n` +
+        `🤖 মোট ক্রিয়েটেড বট: ${bSnap.exists() ? Object.keys(bSnap.val()).length : 0}\n` +
+        `🏴 মোট ক্লায়েন্ট ইউজার: ${totalClientUsers}`,
+        { parse_mode: 'Markdown' }
+    );
+    ctx.answerCbQuery();
+});
+
+mainBot.action('admin_broadcast', async (ctx) => {
+    await sessionsRef.child(ctx.from.id.toString()).set({ step: 'ADMIN_BC_WAIT_CONTENT' });
+    ctx.editMessageText("📢 বস, মেইন ব্রডকাস্ট মেসেজটি পাঠাও (ছবি বা টেক্সট)।");
+    ctx.answerCbQuery();
+});
+
+// --- DYNAMIC TEXT HANDLER (WIZARD ENGINE) ---
 mainBot.on('text', async (ctx) => {
     const uid = ctx.from.id.toString();
     const snap = await sessionsRef.child(uid).once('value');
@@ -163,7 +271,7 @@ mainBot.on('text', async (ctx) => {
     const session = snap.val();
     const input = ctx.message.text.trim();
 
-    // Step 1: Token Validation
+    // --- NEW BOT CREATION LOGIC ---
     if (session.step === 'WAIT_TOKEN') {
         try {
             ctx.reply("⏳ টোকেন যাচাই করা হচ্ছে...");
@@ -188,12 +296,10 @@ mainBot.on('text', async (ctx) => {
             ctx.reply("❌ ভুল টোকেন! দয়া করে সঠিক টোকেনটি কপি করে পাঠান।");
         }
     } 
-    // Step 3: Welcome Text
     else if (session.step === 'WAIT_TEXT') {
         await sessionsRef.child(uid).update({ step: 'WAIT_BTN_COUNT', welcomeText: input });
         ctx.reply("✨ *ধাপ ৪: বাটন সংখ্যা*\n\nবটে কয়টি বাটন রাখতে চান? (০ থেকে ৩ এর মধ্যে সংখ্যা লিখুন)");
     }
-    // Step 4: Button Count
     else if (session.step === 'WAIT_BTN_COUNT') {
         const count = parseInt(input);
         if (isNaN(count) || count < 0 || count > 3) return ctx.reply("দয়া করে শুধু সংখ্যা লিখুন (0, 1, 2, 3)।");
@@ -205,7 +311,6 @@ mainBot.on('text', async (ctx) => {
             ctx.reply(`বাটন ১ এর নাম এবং লিঙ্ক দিন।\n\n*ফরমেট:* নাম | লিঙ্ক\n*উদাহরণ:* Join Channel | https://t.me/lagatech`, { parse_mode: 'Markdown' });
         }
     }
-    // Step 5: Button Data Collection
     else if (session.step === 'WAIT_BTN_DATA') {
         const parts = input.split('|');
         if (parts.length < 2) return ctx.reply("❌ ভুল ফরম্যাট! (নাম | লিঙ্ক) এভাবে লিখুন।");
@@ -220,24 +325,67 @@ mainBot.on('text', async (ctx) => {
             ctx.reply(`বাটন ${btnList.length + 1} এর তথ্য দিন (নাম | লিঙ্ক)`);
         }
     }
+    // --- BROADCAST SETUP LOGIC ---
+    else if (session.step === 'BC_SET_ADMINS') {
+        const botId = session.botId;
+        const ids = input.split(',').map(id => id.trim());
+        
+        await botsRef.child(botId).child('broadcastAdmins').set(ids);
+        await sessionsRef.child(uid).remove();
+        
+        ctx.reply(`✅ সফল! এই বটের ব্রডকাস্ট এডমিন সেট করা হয়েছে। এখন তারা বটে গিয়ে /broadcast কমান্ড ব্যবহার করতে পারবে।`);
+    }
+    // --- ADMIN MAIN BROADCAST LOGIC ---
+    else if (session.step === 'ADMIN_BC_BTN') {
+        const parts = input.split('|');
+        if (parts.length < 2) return ctx.reply("❌ ভুল ফরম্যাট! (নাম | লিঙ্ক) এভাবে লিখুন।");
+
+        await performMainBroadcast(ctx, session, [{ text: parts[0].trim(), url: parts[1].trim() }]);
+    }
 });
 
-// Handle Image Upload for Step 2
-mainBot.on(['photo', 'message'], async (ctx) => {
+// --- DYNAMIC IMAGE HANDLER ---
+mainBot.on('photo', async (ctx) => {
+    const uid = ctx.from.id.toString();
+    const snap = await sessionsRef.child(uid).once('value');
+    if (!snap.exists()) return;
+    const session = snap.val();
+
+    // NEW BOT CREATION IMAGE STEP
+    if (session.step === 'WAIT_IMAGE') {
+        const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+        await sessionsRef.child(uid).update({ step: 'WAIT_TEXT', welcomeImage: fileId });
+        
+        ctx.reply(
+            "🖼 ছবি ঠিক আছে! বেশ সুন্দর হয়েছে!\n\n" +
+            "✨ *ধাপ ৩: ওয়েলকাম মেসেজ*\n\n" +
+            "বট স্টার্ট করলে কি লেখা দেখাবে? সেটি লিখুন।", 
+            { parse_mode: 'Markdown' }
+        );
+    }
+    // ADMIN MAIN BROADCAST IMAGE
+    else if (session.step === 'ADMIN_BC_WAIT_CONTENT') {
+        const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+        const caption = ctx.message.caption || "";
+        
+        await sessionsRef.child(uid).update({ step: 'ADMIN_BC_BTN', bcImage: fileId, bcText: caption });
+        ctx.reply("📢 ছবি পেয়েছি। এখন একটি বাটন দিতে চাইলে লিখুন (নাম | লিঙ্ক), অথবা /skip করুন।");
+    }
+});
+
+// --- COMMAND HANDLERS FOR WIZARD SKIPS ---
+mainBot.command('skip', async (ctx) => {
     const uid = ctx.from.id.toString();
     const snap = await sessionsRef.child(uid).once('value');
     if (!snap.exists()) return;
     const session = snap.val();
 
     if (session.step === 'WAIT_IMAGE') {
-        const fileId = ctx.message.photo ? ctx.message.photo[ctx.message.photo.length - 1].file_id : null;
-        
-        if (!fileId && ctx.message.text !== '/skip') {
-            return ctx.reply("দয়া করে ছবি পাঠান অথবা /skip লিখুন।");
-        }
-
-        await sessionsRef.child(uid).update({ step: 'WAIT_TEXT', welcomeImage: fileId || null });
-        ctx.reply("✨ *ধাপ ৩: ওয়েলকাম মেসেজ*\n\nবট স্টার্ট করলে কি লেখা দেখাবে? সেটি লিখুন।");
+        await sessionsRef.child(uid).update({ step: 'WAIT_TEXT', welcomeImage: null });
+        ctx.reply("👌 ঠিক আছে, ছবি ছাড়াই চলবে।\n\n✨ *ধাপ ৩: ওয়েলকাম মেসেজ*\n\nএখন টেক্সট লিখুন।", { parse_mode: 'Markdown' });
+    } 
+    else if (session.step === 'ADMIN_BC_BTN') {
+        await performMainBroadcast(ctx, session, []);
     }
 });
 
@@ -255,71 +403,27 @@ async function finalizeBotCreation(ctx, session, buttons) {
             buttons: buttons,
             status: 'RUN',
             createdAt: Date.now(),
-            admins: [ctx.from.id]
+            admins: [ctx.from.id],
+            broadcastAdmins: [ctx.from.id] // Default owner is broadcast admin
         };
 
         await botsRef.child(botId).set(botData);
         await sessionsRef.child(ctx.from.id.toString()).remove();
         
-        ctx.reply(`🎉 *অভিনন্দন!*\n\nআপনার বট *@${session.botUsername}* এখন লাইভ এবং ব্যবহারের জন্য প্রস্তুত।`, { parse_mode: 'Markdown' });
+        ctx.reply(`🎉 *অভিনন্দন!*\n\nতোমার বট *@${session.botUsername}* এখন লাইভ! আয় বস আয় দেখে যাই! 😍`, { parse_mode: 'Markdown' });
         
-        // Launch the bot instance immediately
         initiateClientBot(botData);
     } catch (e) {
-        ctx.reply("❌ সেভ করার সময় সমস্যা হয়েছে। আবার চেষ্টা করুন।");
+        ctx.reply("❌ সেভ করার সময় সমস্যা হয়েছে।");
     }
 }
 
-// --- 4. MY BOTS MANAGEMENT PANEL ---
-mainBot.hears('🤖 My Bots', async (ctx) => {
-    try {
-        const snap = await botsRef.orderByChild('ownerId').equalTo(ctx.from.id).once('value');
-        const bots = snap.val();
-
-        if (!bots) return ctx.reply("আপনি কোনো বট যুক্ত করেননি।");
-
-        ctx.reply("📦 আপনার তৈরি করা বটগুলোর তালিকা:");
-
-        for (let key in bots) {
-            const b = bots[key];
-            const btnLabel = b.status === 'RUN' ? '⏹ Stop Bot' : '▶️ Start Bot';
-            
-            ctx.reply(
-                `🤖 *বট:* ${b.botName}\n` +
-                `🔗 *ইউজার:* @${b.botUsername}\n` +
-                `📊 *স্ট্যাটাস:* ${b.status === 'RUN' ? '✅ Active' : '❌ Stopped'}`,
-                Markup.inlineKeyboard([
-                    [Markup.button.callback(btnLabel, `toggle_${b.id}`)],
-                    [Markup.button.callback('🗑 Delete Bot', `delete_${b.id}`)]
-                ], { parse_mode: 'Markdown' })
-            );
-        }
-    } catch (e) {
-        ctx.reply("বট লিস্ট লোড করতে সমস্যা হচ্ছে।");
-    }
-});
-
-// Inline Actions for Bot Management
-mainBot.action(/toggle_(.+)/, async (ctx) => {
+// --- INLINE ACTIONS ---
+mainBot.action(/edit_(.+)/, async (ctx) => {
     const bid = ctx.match[1];
-    const snap = await botsRef.child(bid).once('value');
-    if (!snap.exists()) return ctx.answerCbQuery("বট পাওয়া যায়নি।");
-
-    const bot = snap.val();
-    const newStatus = bot.status === 'RUN' ? 'STOP' : 'RUN';
-
-    if (newStatus === 'STOP') {
-        if (activeBots[bid]) {
-            try { activeBots[bid].stop(); } catch (e) {}
-            delete activeBots[bid];
-        }
-    } else {
-        initiateClientBot(bot);
-    }
-
-    await botsRef.child(bid).update({ status: newStatus });
-    ctx.editMessageText(`বটের স্ট্যাটাস আপডেট হয়েছে: ${newStatus}`);
-    ctx.answerCbQuery(`বট ${newStatus === 'RUN' ? 'চালু' : 'বন্ধ'} হয়েছে।`);
+    await sessionsRef.child(ctx.from.id.toString()).set({ step: 'WAIT_TEXT', editingBotId: bid, editing: true });
+    ctx.answerCbQuery("এডিট মোড অন!");
+    ctx.reply("এডিট করার জন্য নতুন ওয়েলকাম টেক্সট পাঠান।");
 });
 
 mainBot.action(/delete_(.+)/, async (ctx) => {
@@ -334,90 +438,161 @@ mainBot.action(/delete_(.+)/, async (ctx) => {
     ctx.answerCbQuery("বটটি ডিলিট করা হয়েছে।");
 });
 
+async function performMainBroadcast(ctx, session, buttons) {
+    const uSnap = await usersRef.once('value');
+    const users = uSnap.val();
+    const kb = buttons.length > 0 ? Markup.inlineKeyboard(buttons.map(b => [Markup.button.url(b.text, b.url)])) : {};
+
+    let success = 0;
+    ctx.reply("📢 মেইন ব্রডকাস্ট শুরু হচ্ছে...");
+
+    for (let uid in users) {
+        try {
+            if (session.bcImage) {
+                await mainBot.telegram.sendPhoto(uid, session.bcImage, { caption: session.bcText, ...kb });
+            } else {
+                await mainBot.telegram.sendMessage(uid, session.bcText, kb);
+            }
+            success++;
+        } catch (e) { }
+    }
+    await sessionsRef.child(ctx.from.id.toString()).remove();
+    ctx.reply(`📢 বস, কাজ শেষ! সফল হয়েছে ${success} জনের কাছে।`);
+}
+
 // --- 5. CLIENT BOT DYNAMIC ENGINE ---
 function initiateClientBot(config) {
     if (activeBots[config.id]) return;
 
     try {
         const bot = new Telegraf(config.token);
+        
+        // Session for client bot broadcast wizard
+        bot.use(session());
 
-        // Client Bot Start Logic
+        // Client Bot Start
         bot.start(async (ctx) => {
             try {
-                // Tracking Subscribers
                 await subsRef.child(config.id).child(ctx.from.id.toString()).update({
                     n: ctx.from.first_name,
                     u: ctx.from.username || "N/A",
                     t: Date.now()
                 });
 
-                const kb = config.buttons ? config.buttons.map(b => [Markup.button.url(b.text, b.url)]) : [];
-                const extra = kb.length > 0 ? Markup.inlineKeyboard(kb) : {};
+                const kb = config.buttons && config.buttons.length > 0 
+                    ? Markup.inlineKeyboard(config.buttons.map(b => [Markup.button.url(b.text, b.url)])) 
+                    : {};
 
+                // FIX: Image showing issue fixed here properly
                 if (config.welcomeImage) {
                     try {
-                        await ctx.replyWithPhoto(config.welcomeImage, { caption: config.welcomeText, ...extra });
+                        await ctx.replyWithPhoto(config.welcomeImage, { 
+                            caption: config.welcomeText || " ", 
+                            ...kb 
+                        });
                     } catch (err) {
-                        // Fallback: If image fails (400 Bad Request), send text
-                        await ctx.reply(config.welcomeText, extra);
+                        // If photo fails, send text only
+                        await ctx.reply(config.welcomeText || "Welcome!", kb);
                     }
                 } else {
-                    await ctx.reply(config.welcomeText, extra);
+                    await ctx.reply(config.welcomeText || "Welcome!", kb);
                 }
             } catch (innerError) {
                 console.error(`Error in Client Bot @${config.botUsername} start:`, innerError.message);
             }
         });
 
-        // Broadcast Feature for Bot Owners
+        // Client Bot Broadcast System
         bot.command('broadcast', async (ctx) => {
-            if (!config.admins.includes(ctx.from.id)) return;
-            ctx.reply("📢 ব্রডকাস্ট মেসেজটি ছবিসহ বা শুধু টেক্সট লিখে পাঠান।");
+            const uid = ctx.from.id;
+            // Check permission
+            const botConfig = (await botsRef.child(config.id).once('value')).val();
+            if (!botConfig.broadcastAdmins || !botConfig.broadcastAdmins.includes(uid.toString())) {
+                return ctx.reply("🚫 দুঃখিত, তুমি ব্রডকাস্ট করতে পারবে না!");
+            }
 
-            const broadcastListener = async (bCtx) => {
-                if (bCtx.from.id !== ctx.from.id) return;
-                
-                const sSnap = await subsRef.child(config.id).once('value');
-                const users = sSnap.val();
-                
-                if (!users) return bCtx.reply("বটে কোনো ইউজার নেই।");
-                
-                let success = 0;
-                let fail = 0;
-                bCtx.reply("⏳ ব্রডকাস্ট শুরু হয়েছে...");
+            ctx.session = ctx.session || {};
+            ctx.session.bcStep = 'WAIT_CONTENT';
+            ctx.reply("📢 *ব্রডকাস্ট মোড*\n\nযা পাঠাতে চাও (ছবি বা টেক্সট) পাঠাও।", { parse_mode: 'Markdown' });
+        });
 
-                for (let uid in users) {
-                    try {
-                        await bCtx.copyMessage(uid);
-                        success++;
-                    } catch (e) {
-                        fail++;
-                    }
+        bot.on(['photo', 'text'], async (ctx) => {
+            if (!ctx.session || !ctx.session.bcStep) return;
+            
+            const step = ctx.session.bcStep;
+            
+            if (step === 'WAIT_CONTENT') {
+                if (ctx.message.photo) {
+                    ctx.session.type = 'photo';
+                    ctx.session.fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+                    ctx.session.text = ctx.message.caption || "";
+                } else {
+                    ctx.session.type = 'text';
+                    ctx.session.text = ctx.message.text;
                 }
-                bCtx.reply(`📢 ব্রডকাস্ট শেষ!\n✅ সফল: ${success}\n❌ ব্যর্থ: ${fail}`);
-                bot.off('message', broadcastListener); // Stop listening after one broadcast
-                bot.off('photo', broadcastListener);
-            };
+                
+                ctx.session.bcStep = 'WAIT_BUTTON';
+                ctx.reply("বাটন দিতে চাও? (নাম | লিঙ্ক) লিখো, অথবা /skip করো।");
+            } 
+            else if (step === 'WAIT_BUTTON') {
+                const parts = ctx.message.text.split('|');
+                if (parts.length < 2) return ctx.reply("ভুল ফরম্যাট! আবার চেষ্টা করো বা /skip করো।");
+                
+                ctx.session.button = { text: parts[0].trim(), url: parts[1].trim() };
+                ctx.session.bcStep = 'CONFIRM';
+                ctx.reply("সব ঠিক আছে? কন্ফার্ম করতে /confirm লিখো।");
+            }
+        });
 
-            bot.on(['message', 'photo'], broadcastListener);
+        bot.command('skip', async (ctx) => {
+            if (!ctx.session || !ctx.session.bcStep) return;
+            if (ctx.session.bcStep === 'WAIT_BUTTON') {
+                ctx.session.bcStep = 'CONFIRM';
+                ctx.reply("বাটন ছাড়া পাঠাবে? কন্ফার্ম করতে /confirm লিখো।");
+            }
+        });
+
+        bot.command('confirm', async (ctx) => {
+            if (!ctx.session || ctx.session.bcStep !== 'CONFIRM') return;
+
+            const sSnap = await subsRef.child(config.id).once('value');
+            const users = sSnap.val();
+            if (!users) return ctx.reply("কোনো ইউজার নেই!");
+
+            let success = 0;
+            const kb = ctx.session.button ? Markup.inlineKeyboard([[Markup.button.url(ctx.session.button.text, ctx.session.button.url)]]) : {};
+
+            ctx.reply("⏳ পাঠানো হচ্ছে...");
+
+            for (let uid in users) {
+                try {
+                    if (ctx.session.type === 'photo') {
+                        await bot.telegram.sendPhoto(uid, ctx.session.fileId, { caption: ctx.session.text, ...kb });
+                    } else {
+                        await bot.telegram.sendMessage(uid, ctx.session.text, kb);
+                    }
+                    success++;
+                } catch (e) { }
+            }
+            
+            ctx.reply(`✅ ব্রডকাস্ট শেষ! সফল: ${success} জন।`);
+            ctx.session = null; // Reset session
         });
 
         bot.launch().then(() => {
-            console.log(`[ENGINE] @${config.botUsername} is now running.`);
-        }).catch(e => {
-            console.error(`[ENGINE] Failed to launch @${config.botUsername}:`, e.message);
-        });
+            console.log(`[ENGINE] @${config.botUsername} is running.`);
+        }).catch(e => console.error(`[ENGINE] Failed @${config.botUsername}:`, e.message));
 
         activeBots[config.id] = bot;
 
     } catch (err) {
-        console.error(`[ENGINE] Critical init error for @${config.botUsername}:`, err.message);
+        console.error(`[ENGINE] Init error @${config.botUsername}:`, err.message);
     }
 }
 
 // --- 6. AUTO-RESUME ON SERVER START ---
 const startup = async () => {
-    console.log("🛠 Booting system and resuming bots...");
+    console.log("🛠 Booting system...");
     try {
         const snap = await botsRef.once('value');
         const allBots = snap.val();
@@ -430,7 +605,7 @@ const startup = async () => {
                     count++;
                 }
             }
-            console.log(`🛠 Total ${count} bots resumed.`);
+            console.log(`🛠 Resumed ${count} bots.`);
         }
 
         mainBot.launch().then(() => console.log("🚀 Main Controller Hub is online!"));
