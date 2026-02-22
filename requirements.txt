@@ -1,3 +1,4 @@
 aiogram==3.4.1
-aiohttp
-pytz
+aiohttp==3.9.5
+pytz==2025.7
+python-dotenv==1.0.1
