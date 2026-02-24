@@ -2,7 +2,7 @@
   "name": "bot-control-hub",
   "version": "3.0.0",
   "description": "A SaaS Telegram Bot Management System with Firebase Database",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
