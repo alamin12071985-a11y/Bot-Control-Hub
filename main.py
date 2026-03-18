@@ -4,11 +4,12 @@ import logging
 import httpx
 from typing import Optional, List, Dict
 from fastapi import FastAPI, HTTPException, Header, Request, Response
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.exceptions import TelegramAPIError
+
+# python-telegram-bot imports
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackContext
+from telegram.error import InvalidToken, TelegramError
 
 # --- Configuration & Constants ---
 BASE_URL = os.getenv("BASE_URL")  # e.g., https://your-app.onrender.com
@@ -34,8 +35,8 @@ def save_bots(data: Dict):
         json.dump(data, f, indent=4)
 
 # --- Global Bot Storage ---
-# Stores active Bot and Dispatcher instances: { "token": { "bot": Bot, "dp": Dispatcher } }
-active_bots: Dict[str, Dict] = {}
+# Stores active Application instances: { "token": Application }
+active_bots: Dict[str, Application] = {}
 
 # --- Pydantic Models ---
 class ButtonModel(BaseModel):
@@ -51,13 +52,10 @@ class BotCreateRequest(BaseModel):
 class BotDeleteRequest(BaseModel):
     token: str
 
-# --- FastAPI App ---
-app = FastAPI(title="Telegram Multi-Bot Factory")
-
 # --- Helper Functions ---
 
 async def validate_token(token: str) -> Optional[dict]:
-    """Validates bot token by calling getMe."""
+    """Validates bot token using httpx to call getMe."""
     url = f"https://api.telegram.org/bot{token}/getMe"
     try:
         async with httpx.AsyncClient() as client:
@@ -76,11 +74,67 @@ def get_credit_footer() -> str:
 
 def build_keyboard(buttons: List[ButtonModel]) -> InlineKeyboardMarkup:
     """Builds Inline Keyboard from button list."""
-    keyboard = InlineKeyboardMarkup(row_width=2)
-    btns = [InlineKeyboardButton(text=btn.name, url=btn.url) for btn in buttons]
-    if btns:
-        keyboard.add(*btns)
-    return keyboard
+    keyboard = []
+    for btn in buttons:
+        keyboard.append([InlineKeyboardButton(text=btn.name, url=btn.url)])
+    return InlineKeyboardMarkup(keyboard) if keyboard else None
+
+# --- Bot Logic (Handlers) ---
+
+async def start_handler(update: Update, context: CallbackContext):
+    """Generic /start handler for all bots."""
+    token = context.bot.token
+    db = load_bots()
+    config = db.get(token)
+    
+    if not config:
+        await update.message.reply_text("Bot configuration not found. Please recreate via API.")
+        return
+
+    text = config.get('text', 'Welcome!')
+    image = config.get('image')
+    buttons = config.get('buttons', [])
+
+    # Append Mandatory Credit
+    final_text = text + get_credit_footer()
+    keyboard = build_keyboard([ButtonModel(**b) for b in buttons])
+
+    try:
+        if image:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id, 
+                photo=image, 
+                caption=final_text, 
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text(
+                text=final_text, 
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+    except TelegramError as e:
+        logger.error(f"Telegram error for bot {token[:10]}...: {e}")
+
+# --- Bot Lifecycle Management ---
+
+async def init_bot(token: str, config: dict):
+    """Initialize a python-telegram-bot Application and store it."""
+    if token in active_bots:
+        return # Already running
+
+    # Create Application
+    application = Application.builder().token(token).build()
+    
+    # Add handler
+    application.add_handler(CommandHandler("start", start_handler))
+    
+    # Initialize the application (sets up internal bot object)
+    await application.initialize()
+    
+    active_bots[token] = application
+    logger.info(f"Bot {token[:10]}... initialized.")
 
 async def setup_webhook(token: str):
     """Registers webhook with Telegram."""
@@ -89,72 +143,22 @@ async def setup_webhook(token: str):
         return False
     
     webhook_url = f"{BASE_URL}/webhook/{token}"
-    bot_instance = Bot(token=token)
-    try:
-        await bot_instance.set_webhook(webhook_url)
-        logger.info(f"Webhook set for {token[:10]}... -> {webhook_url}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
-        return False
-    finally:
-        await bot_instance.session.close()
-
-# --- Bot Logic ---
-
-async def message_handler(update: types.Update, bot: Bot):
-    """Generic handler for all active bots."""
-    if update.message and update.message.text == '/start':
-        token = bot.token
-        db = load_bots()
-        config = db.get(token)
-        
-        if not config:
-            await update.message.reply_text("Bot configuration not found. Please recreate.")
-            return
-
-        text = config.get('text', 'Welcome!')
-        image = config.get('image')
-        buttons = config.get('buttons', [])
-
-        # Append Mandatory Credit
-        final_text = text + get_credit_footer()
-        keyboard = build_keyboard([ButtonModel(**b) for b in buttons])
-
-        try:
-            if image:
-                await bot.send_photo(
-                    chat_id=update.message.chat.id, 
-                    photo=image, 
-                    caption=final_text, 
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-            else:
-                await bot.send_message(
-                    chat_id=update.message.chat.id, 
-                    text=final_text, 
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-        except TelegramAPIError as e:
-            logger.error(f"Error sending message for bot {token[:10]}...: {e}")
-
-async def register_bot(token: str, config: dict):
-    """Initializes a bot instance and stores it in memory."""
+    
+    # Use the bot instance to set webhook
     if token in active_bots:
-        return # Already running
+        bot = active_bots[token].bot
+        try:
+            await bot.set_webhook(url=webhook_url)
+            logger.info(f"Webhook set for {token[:10]}... -> {webhook_url}")
+            return True
+        except TelegramError as e:
+            logger.error(f"Failed to set webhook: {e}")
+            return False
+    return False
 
-    bot = Bot(token=token)
-    dp = Dispatcher(bot)
-    
-    # Register the generic handler
-    dp.register_message_handler(message_handler, commands=['start'])
-    
-    active_bots[token] = {"bot": bot, "dp": dp}
-    logger.info(f"Bot {token[:10]}... initialized in memory.")
+# --- FastAPI App ---
 
-# --- API Endpoints ---
+app = FastAPI(title="Telegram Multi-Bot Factory (PTB)")
 
 @app.on_event("startup")
 async def startup_event():
@@ -162,7 +166,7 @@ async def startup_event():
     logger.info("Startup: Restoring bots...")
     db = load_bots()
     for token, config in db.items():
-        await register_bot(token, config)
+        await init_bot(token, config)
         await setup_webhook(token)
     logger.info(f"Restored {len(db)} bots.")
 
@@ -187,7 +191,7 @@ async def create_bot(
     save_bots(db)
 
     # 3. Initialize Bot in Memory
-    await register_bot(data.token, bot_data)
+    await init_bot(data.token, bot_data)
 
     # 4. Set Webhook
     success = await setup_webhook(data.token)
@@ -225,8 +229,13 @@ async def delete_bot(data: BotDeleteRequest, x_api_key: str = Header(None, alias
     db = load_bots()
 
     if token in active_bots:
-        # Close session gracefully
-        await active_bots[token]['bot'].close()
+        # Shutdown and delete webhook
+        app_instance = active_bots[token]
+        try:
+            await app_instance.bot.delete_webhook()
+            await app_instance.shutdown()
+        except Exception as e:
+            logger.error(f"Error shutting down bot: {e}")
         del active_bots[token]
     
     if token in db:
@@ -247,13 +256,10 @@ async def telegram_webhook(token: str, request: Request):
 
     try:
         update_data = await request.json()
-        update = types.Update(**update_data)
+        update = Update.de_json(update_data, active_bots[token].bot)
         
-        bot = active_bots[token]['bot']
-        dp = active_bots[token]['dp']
-        
-        # Process update
-        await dp.process_update(update)
+        # Process update using python-telegram-bot
+        await active_bots[token].process_update(update)
         return Response(status_code=200)
     
     except Exception as e:
