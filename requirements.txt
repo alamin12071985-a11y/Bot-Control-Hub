@@ -1,6 +1,6 @@
 fastapi
 uvicorn[standard]
-aiogram
+python-telegram-bot
 httpx
 python-dotenv
 pydantic
