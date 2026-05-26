@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "public/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    { "src": "/videos", "dest": "main.py" },
+    { "src": "/tasks", "dest": "main.py" },
+    { "src": "/admin/(.*)", "dest": "main.py" },
+    { "src": "/video/(.*)", "dest": "main.py" },
+    { "src": "/(.*)", "dest": "public/$1" }
+  ]
+}
