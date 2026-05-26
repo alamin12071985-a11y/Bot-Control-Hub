@@ -1,937 +1,615 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Viral Video</title>
-
-    <!-- Telegram -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-
-    <!-- PaidAdz -->
-    <script
-        src='//whephiwums.com/sdk.js'
-        data-zone='11007747'
-        data-sdk='show_11007747'>
-    </script>
-
-    <!-- Tailwind -->
     <script src="https://cdn.tailwindcss.com"></script>
-
-    <!-- Font -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Hilltopads In-App Interstitial Script -->
+    <script>
+        window.show_11007747 = window.show_11007747 || function(config) {
+            console.log("Hilltopads script loaded with config:", config);
+        };
+    </script>
+    <script async src="https://hilltopads.net/p/11007747"></script>
 
     <style>
-        *{
-            font-family:'Inter',sans-serif;
-            -webkit-tap-highlight-color:transparent;
+        * { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background: #0F172A; overflow-x: hidden; }
+        
+        /* Animated Blobs */
+        .blob { position: fixed; border-radius: 50%; filter: blur(80px); opacity: 0.4; z-index: 0; animation: float 8s infinite ease-in-out; }
+        .blob-1 { width: 300px; height: 300px; background: #7C3AED; top: -50px; left: -50px; }
+        .blob-2 { width: 250px; height: 250px; background: #3B82F6; bottom: 20%; right: -50px; animation-delay: 2s; }
+        .blob-3 { width: 200px; height: 200px; background: #9333EA; top: 40%; left: 30%; animation-delay: 4s; }
+        
+        @keyframes float {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(30px, -20px) scale(1.1); }
+            66% { transform: translate(-20px, 20px) scale(0.9); }
         }
 
-        body{
-            background:#0F172A;
-            overflow-x:hidden;
-            color:white;
-        }
+        /* Glassmorphism */
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+        
+        /* Loading Screen */
+        #loading-screen { position: fixed; inset: 0; z-index: 999; background: #0F172A; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.5s, visibility 0.5s; }
+        #loading-screen.hide { opacity: 0; visibility: hidden; }
+        .loader { width: 100px; height: 6px; background: rgba(255,255,255,0.1); border-radius: 10px; overflow: hidden; margin-top: 20px; }
+        .loader-bar { height: 100%; background: linear-gradient(90deg, #7C3AED, #3B82F6); width: 0%; animation: load 2s infinite ease-in-out; }
+        @keyframes load { 0% { width: 0%; } 50% { width: 100%; } 100% { width: 0%; margin-left: 100%; } }
 
-        .blob{
-            position:fixed;
-            border-radius:9999px;
-            filter:blur(80px);
-            opacity:.4;
-            z-index:0;
-            animation:float 8s infinite ease-in-out;
-        }
+        /* Skeleton */
+        .skeleton { background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%); background-size: 200% 100%; animation: skeleton-loading 1.5s infinite; border-radius: 12px; }
+        @keyframes skeleton-loading { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-        .blob-1{
-            width:300px;
-            height:300px;
-            background:#7C3AED;
-            top:-50px;
-            left:-50px;
-        }
+        /* Page Transitions */
+        .page { display: none; animation: fadeIn 0.3s ease-in-out; }
+        .page.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-        .blob-2{
-            width:250px;
-            height:250px;
-            background:#3B82F6;
-            right:-50px;
-            bottom:20%;
-            animation-delay:2s;
-        }
+        /* Modal & Toast */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 50; display: none; align-items: center; justify-content: center; }
+        .modal-overlay.show { display: flex; }
+        .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #10B981; color: white; padding: 12px 24px; border-radius: 12px; z-index: 100; opacity: 0; transition: opacity 0.3s; }
+        .toast.show { opacity: 1; }
 
-        .blob-3{
-            width:220px;
-            height:220px;
-            background:#9333EA;
-            top:40%;
-            left:30%;
-            animation-delay:4s;
-        }
+        /* Fake Ad Simulation Overlay */
+        .ad-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 60; display: none; flex-direction: column; align-items: center; justify-content: center; color: white; }
+        .ad-overlay.show { display: flex; }
+        .ad-close-btn { display: none; margin-top: 20px; background: white; color: black; padding: 10px 20px; border-radius: 8px; font-weight: bold; }
 
-        @keyframes float{
-            0%,100%{
-                transform:translate(0,0) scale(1);
-            }
-            33%{
-                transform:translate(30px,-20px) scale(1.1);
-            }
-            66%{
-                transform:translate(-20px,20px) scale(.9);
-            }
-        }
-
-        .glass{
-            background:rgba(30,41,59,.7);
-            backdrop-filter:blur(12px);
-            -webkit-backdrop-filter:blur(12px);
-            border:1px solid rgba(255,255,255,.08);
-        }
-
-        .gradient-text{
-            background:linear-gradient(135deg,#8B5CF6,#3B82F6);
-            -webkit-background-clip:text;
-            -webkit-text-fill-color:transparent;
-        }
-
-        #loading-screen{
-            position:fixed;
-            inset:0;
-            z-index:999;
-            background:#0F172A;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            flex-direction:column;
-            transition:.4s;
-        }
-
-        #loading-screen.hide{
-            opacity:0;
-            visibility:hidden;
-        }
-
-        .loader{
-            width:120px;
-            height:6px;
-            border-radius:999px;
-            overflow:hidden;
-            background:rgba(255,255,255,.1);
-            margin-top:20px;
-        }
-
-        .loader-bar{
-            height:100%;
-            width:0%;
-            background:linear-gradient(90deg,#8B5CF6,#3B82F6);
-            animation:load 2s infinite ease-in-out;
-        }
-
-        @keyframes load{
-            0%{
-                width:0%;
-            }
-            50%{
-                width:100%;
-            }
-            100%{
-                width:0%;
-                margin-left:100%;
-            }
-        }
-
-        .page{
-            display:none;
-            animation:fade .25s ease;
-        }
-
-        .page.active{
-            display:block;
-        }
-
-        @keyframes fade{
-            from{
-                opacity:0;
-                transform:translateY(8px);
-            }
-            to{
-                opacity:1;
-                transform:translateY(0);
-            }
-        }
-
-        .toast{
-            position:fixed;
-            top:20px;
-            left:50%;
-            transform:translateX(-50%);
-            background:#10B981;
-            padding:12px 20px;
-            border-radius:14px;
-            z-index:1000;
-            opacity:0;
-            transition:.3s;
-            font-size:14px;
-            font-weight:600;
-        }
-
-        .toast.show{
-            opacity:1;
-        }
-
-        .modal{
-            position:fixed;
-            inset:0;
-            background:rgba(0,0,0,.7);
-            z-index:200;
-            display:none;
-            align-items:center;
-            justify-content:center;
-            padding:16px;
-        }
-
-        .modal.show{
-            display:flex;
-        }
-
-        .progress-fill{
-            transition:.4s;
-        }
-
-        .skeleton{
-            background:linear-gradient(
-                90deg,
-                rgba(255,255,255,.05) 25%,
-                rgba(255,255,255,.1) 50%,
-                rgba(255,255,255,.05) 75%
-            );
-
-            background-size:200% 100%;
-            animation:skeleton 1.5s infinite;
-            border-radius:18px;
-        }
-
-        @keyframes skeleton{
-            0%{
-                background-position:200% 0;
-            }
-            100%{
-                background-position:-200% 0;
-            }
-        }
+        /* Misc */
+        .gradient-text { background: linear-gradient(135deg, #7C3AED, #3B82F6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .progress-fill { transition: width 0.5s ease-in-out; }
     </style>
 </head>
+<body class="text-white relative min-h-screen pb-24">
 
-<body class="min-h-screen pb-24">
-
-    <!-- Background Blobs -->
+    <!-- Animated Blobs -->
     <div class="blob blob-1"></div>
     <div class="blob blob-2"></div>
     <div class="blob blob-3"></div>
 
-    <!-- Loading -->
+    <!-- Loading Screen -->
     <div id="loading-screen">
-        <div class="flex items-center gap-3">
-            <h1 class="text-3xl font-extrabold gradient-text">
-                Viral Video
-            </h1>
-
-            <img
-                id="load-avatar"
-                class="w-10 h-10 rounded-full border-2 border-purple-500 hidden"
-            />
+        <div class="flex items-center gap-3 mb-4">
+            <span class="text-3xl font-extrabold gradient-text">Viral Video</span>
+            <img id="load-avatar" src="" class="w-10 h-10 rounded-full border-2 border-purple-500 hidden" alt="">
         </div>
-
-        <div class="loader">
-            <div class="loader-bar"></div>
-        </div>
+        <div class="loader"><div class="loader-bar"></div></div>
     </div>
 
     <!-- Header -->
-    <header class="sticky top-0 z-50 glass p-4 flex items-center justify-between">
+    <header class="sticky top-0 z-40 glass p-4 flex items-center justify-between">
         <div class="flex items-center gap-3">
-
-            <img
-                id="header-avatar"
-                class="w-10 h-10 rounded-full hidden border border-slate-700"
-            />
-
+            <img id="header-avatar" src="" class="w-9 h-9 rounded-full border border-gray-600 hidden" alt="">
             <div>
-                <h1 class="font-bold text-lg gradient-text leading-none">
-                    Viral Video
-                </h1>
-
-                <p
-                    id="header-username"
-                    class="text-xs text-slate-400 mt-1"
-                >
-                    Welcome Back
-                </p>
+                <h1 class="text-lg font-bold gradient-text leading-none">Viral Video</h1>
+                <p id="header-username" class="text-xs text-slate-400 mt-0.5">Welcome back</p>
             </div>
         </div>
-
-        <div
-            id="admin-badge"
-            class="hidden bg-purple-600 text-xs px-3 py-1 rounded-full font-bold"
-        >
-            Admin
-        </div>
+        <div id="admin-badge" class="hidden bg-purple-600 text-xs px-2 py-1 rounded-full font-semibold">Admin</div>
     </header>
 
-    <!-- Main -->
+    <!-- Main Content -->
     <main class="relative z-10 px-4 pt-4">
+        
+        <!-- Deep Link Video Player -->
+        <div id="deep-link-container" class="page hidden">
+            <button onclick="closeDeepLink()" class="mb-4 text-sm text-slate-300 flex items-center gap-1"><span class="text-lg">←</span> Back to App</button>
+            <div id="deep-link-content"></div>
+        </div>
 
-        <!-- Videos -->
-        <section id="page-videos" class="page active">
-
-            <h2 class="text-xl font-bold mb-4">
-                Trending Videos
-            </h2>
-
+        <!-- Videos Page -->
+        <div id="page-videos" class="page active">
+            <h2 class="text-xl font-bold mb-4">Trending Videos</h2>
             <div id="videos-container" class="space-y-4">
-
-                <div class="skeleton h-52"></div>
-                <div class="skeleton h-52"></div>
-
+                <div class="skeleton h-48 w-full"></div>
+                <div class="skeleton h-48 w-full"></div>
             </div>
-        </section>
+        </div>
 
-        <!-- Tasks -->
-        <section id="page-tasks" class="page">
-
-            <h2 class="text-xl font-bold mb-4">
-                Earn Unlocks
-            </h2>
-
+        <!-- Tasks Page -->
+        <div id="page-tasks" class="page">
+            <h2 class="text-xl font-bold mb-4">Earn Unlocks</h2>
             <div id="tasks-container" class="space-y-4">
-
-                <div class="skeleton h-24"></div>
-                <div class="skeleton h-24"></div>
-
+                <div class="skeleton h-24 w-full"></div>
+                <div class="skeleton h-24 w-full"></div>
             </div>
-        </section>
+        </div>
 
-        <!-- Admin -->
-        <section id="page-admin" class="page hidden">
-
-            <div class="flex items-center justify-between mb-5">
-                <h2 class="text-xl font-bold">
-                    Admin Dashboard
-                </h2>
-
-                <button
-                    onclick="openVideoModal()"
-                    class="bg-purple-600 px-4 py-2 rounded-xl text-sm font-semibold"
-                >
-                    + Add Video
-                </button>
+        <!-- Admin Page -->
+        <div id="page-admin" class="page hidden">
+            <h2 class="text-xl font-bold mb-4">Admin Dashboard</h2>
+            
+            <div class="flex gap-2 mb-6">
+                <button onclick="showAdminTab('videos')" id="admin-tab-videos" class="flex-1 py-2 rounded-xl text-sm font-semibold bg-purple-600">Videos</button>
+                <button onclick="showAdminTab('tasks')" id="admin-tab-tasks" class="flex-1 py-2 rounded-xl text-sm font-semibold bg-slate-700">Tasks</button>
             </div>
 
-            <div id="admin-videos-list" class="space-y-3"></div>
-
-        </section>
+            <div id="admin-videos-section">
+                <button onclick="openVideoModal()" class="w-full glass rounded-2xl p-3 mb-4 text-center text-purple-400 font-semibold border-dashed border-2 border-purple-400">+ Add Video</button>
+                <div id="admin-videos-list" class="space-y-3"></div>
+            </div>
+            <div id="admin-tasks-section" class="hidden">
+                <button onclick="openTaskModal()" class="w-full glass rounded-2xl p-3 mb-4 text-center text-blue-400 font-semibold border-dashed border-2 border-blue-400">+ Add Task</button>
+                <div id="admin-tasks-list" class="space-y-3"></div>
+            </div>
+        </div>
     </main>
 
-    <!-- Bottom Nav -->
-    <nav class="fixed bottom-0 left-0 right-0 z-50 glass">
-
-        <div class="flex justify-around py-3">
-
-            <button
-                id="tab-videos"
-                onclick="switchTab('videos')"
-                class="flex flex-col items-center text-purple-400"
-            >
-                <span>🎬</span>
-                <span class="text-xs mt-1 font-semibold">
-                    Videos
-                </span>
+    <!-- Bottom Navigation -->
+    <nav class="fixed bottom-0 left-0 right-0 z-40 glass">
+        <div class="flex justify-around py-3 max-w-lg mx-auto">
+            <button onclick="switchTab('videos')" id="tab-videos" class="flex flex-col items-center text-purple-400">
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z"/></svg>
+                <span class="text-xs mt-1 font-semibold">Videos</span>
             </button>
-
-            <button
-                id="tab-tasks"
-                onclick="switchTab('tasks')"
-                class="flex flex-col items-center text-slate-400"
-            >
-                <span>📋</span>
-                <span class="text-xs mt-1 font-semibold">
-                    Tasks
-                </span>
+            <button onclick="switchTab('tasks')" id="tab-tasks" class="flex flex-col items-center text-slate-400">
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>
+                <span class="text-xs mt-1 font-semibold">Tasks</span>
             </button>
-
         </div>
     </nav>
 
-    <!-- Toast -->
-    <div id="toast" class="toast">
-        Success
+    <!-- Modals & Overlays -->
+    <div id="toast" class="toast">Success!</div>
+    
+    <!-- Fake Ad Simulation Overlay (Fallback) -->
+    <div id="fake-ad-overlay" class="ad-overlay">
+        <div class="text-center p-6">
+            <p class="text-sm text-gray-400 mb-2">Sponsored Ad</p>
+            <div class="skeleton h-40 w-60 mb-4 mx-auto"></div>
+            <p class="text-gray-300 text-sm">Loading sponsor content...</p>
+            <button id="fake-ad-close" class="ad-close-btn mt-4">Close Ad</button>
+        </div>
     </div>
 
-    <!-- Video Modal -->
-    <div id="video-modal" class="modal">
-
-        <div class="glass rounded-3xl p-5 w-full max-w-sm">
-
-            <h3 class="font-bold text-lg mb-4">
-                Add Video
-            </h3>
-
+    <div id="video-modal" class="modal-overlay">
+        <div class="glass rounded-3xl p-6 w-full max-w-sm mx-4">
+            <h3 class="text-lg font-bold mb-4" id="video-modal-title">Add Video</h3>
+            <input type="hidden" id="vm-id">
             <div class="space-y-3">
-
-                <input
-                    id="vm-title"
-                    type="text"
-                    placeholder="Video Title"
-                    class="w-full bg-slate-800/60 rounded-xl p-3 outline-none text-sm"
-                >
-
-                <input
-                    id="vm-img"
-                    type="text"
-                    placeholder="Image URL"
-                    class="w-full bg-slate-800/60 rounded-xl p-3 outline-none text-sm"
-                >
-
-                <input
-                    id="vm-url"
-                    type="text"
-                    placeholder="Video URL"
-                    class="w-full bg-slate-800/60 rounded-xl p-3 outline-none text-sm"
-                >
-
-                <input
-                    id="vm-ads"
-                    type="number"
-                    placeholder="Ads Required"
-                    class="w-full bg-slate-800/60 rounded-xl p-3 outline-none text-sm"
-                >
+                <input id="vm-title" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Video Title">
+                <input id="vm-img" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Image URL">
+                <input id="vm-url" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Video URL">
+                <input id="vm-ads" type="number" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Ads Required to Unlock">
             </div>
+            <div class="flex gap-2 mt-6">
+                <button onclick="closeVideoModal()" class="flex-1 py-3 rounded-xl bg-slate-700 font-semibold text-sm">Cancel</button>
+                <button onclick="saveVideo()" class="flex-1 py-3 rounded-xl bg-purple-600 font-semibold text-sm">Save</button>
+            </div>
+        </div>
+    </div>
 
-            <div class="flex gap-2 mt-5">
-
-                <button
-                    onclick="closeVideoModal()"
-                    class="flex-1 bg-slate-700 py-3 rounded-xl font-semibold text-sm"
-                >
-                    Cancel
-                </button>
-
-                <button
-                    onclick="saveVideo()"
-                    class="flex-1 bg-purple-600 py-3 rounded-xl font-semibold text-sm"
-                >
-                    Save
-                </button>
-
+    <div id="task-modal" class="modal-overlay">
+        <div class="glass rounded-3xl p-6 w-full max-w-sm mx-4">
+            <h3 class="text-lg font-bold mb-4">Add Task</h3>
+            <input type="hidden" id="tm-id">
+            <div class="space-y-3">
+                <input id="tm-title" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Task Title">
+                <input id="tm-img" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Image URL">
+                <input id="tm-url" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Redirect Link">
+            </div>
+            <div class="flex gap-2 mt-6">
+                <button onclick="closeTaskModal()" class="flex-1 py-3 rounded-xl bg-slate-700 font-semibold text-sm">Cancel</button>
+                <button onclick="saveTask()" class="flex-1 py-3 rounded-xl bg-blue-600 font-semibold text-sm">Save</button>
             </div>
         </div>
     </div>
 
     <script>
-
-        // Telegram
-        const tg = window.Telegram.WebApp;
-        tg.expand();
-        tg.ready();
-
-        // User
-        const user = tg.initDataUnsafe.user;
-
-        // Admin
-        const ADMIN_IDS = [6040791692];
+        // --- Telegram WebApp Integration ---
+        const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+        let user = tg ? tg.initDataUnsafe.user : null;
+        const ADMIN_IDS = [6040791692]; // Your Telegram ID
         let isAdmin = false;
 
-        // Storage
-        let adProgress =
-            JSON.parse(
-                localStorage.getItem('adProgress') || '{}'
-            );
+        // Local storage for ad progress
+        let adProgress = JSON.parse(localStorage.getItem('adProgress') || '{}');
 
-        // Demo Data
-        let videos = [
-            {
-                id:1,
-                unique_id:'abc123',
-                title:'Amazing Nature Video',
-                image_url:'https://picsum.photos/600/400?1',
-                video_url:'https://www.w3schools.com/html/mov_bbb.mp4',
-                ads_required:5
-            },
-            {
-                id:2,
-                unique_id:'abc456',
-                title:'Viral Trending Clip',
-                image_url:'https://picsum.photos/600/400?2',
-                video_url:'https://www.w3schools.com/html/movie.mp4',
-                ads_required:3
+        // Ad Callback function required by Hilltopads
+        window.adCallback_11007747 = function(isAdShown) {
+            if (isAdShown) {
+                console.log("Hilltop Ad shown successfully");
+                rewardUserAfterAd();
+            } else {
+                console.log("Hilltop Ad not available, showing fallback simulation");
+                showFakeAdSimulation();
             }
-        ];
-
-        let tasks = [
-            {
-                id:1,
-                title:'Join Telegram Channel',
-                image_url:'https://picsum.photos/200/200?3',
-                redirect_url:'https://t.me/PaidAdzBot'
-            }
-        ];
-
-        // Init
-        window.onload = () => {
-
-            setupUser();
-
-            setTimeout(() => {
-
-                document
-                    .getElementById('loading-screen')
-                    .classList
-                    .add('hide');
-
-                loadVideos();
-                loadTasks();
-
-            },2000);
         };
 
-        // Setup
-        function setupUser(){
-
-            if(!user) return;
-
-            document.getElementById(
-                'header-username'
-            ).innerText = user.first_name;
-
-            const avatar =
-                `https://ui-avatars.com/api/?name=${user.first_name}&background=7C3AED&color=fff`;
-
-            document.getElementById(
-                'header-avatar'
-            ).src = avatar;
-
-            document.getElementById(
-                'load-avatar'
-            ).src = avatar;
-
-            document
-                .getElementById('header-avatar')
-                .classList
-                .remove('hidden');
-
-            document
-                .getElementById('load-avatar')
-                .classList
-                .remove('hidden');
-
-            if(ADMIN_IDS.includes(user.id)){
-
-                isAdmin = true;
-
-                document
-                    .getElementById('admin-badge')
-                    .classList
-                    .remove('hidden');
-
-                document
-                    .getElementById('page-admin')
-                    .classList
-                    .remove('hidden');
-
-                addAdminTab();
-            }
-        }
-
-        // Tabs
-        function switchTab(tab){
-
-            document.querySelectorAll('.page')
-                .forEach(p => p.classList.remove('active'));
-
-            document
-                .getElementById(`page-${tab}`)
-                .classList
-                .add('active');
-
-            document.querySelectorAll('nav button')
-                .forEach(btn => {
-                    btn.classList.remove(
-                        'text-purple-400',
-                        'text-blue-400'
-                    );
-
-                    btn.classList.add('text-slate-400');
-                });
-
-            document
-                .getElementById(`tab-${tab}`)
-                .classList
-                .remove('text-slate-400');
-
-            document
-                .getElementById(`tab-${tab}`)
-                .classList
-                .add(
-                    tab === 'tasks'
-                    ? 'text-blue-400'
-                    : 'text-purple-400'
-                );
-
-            if(tab === 'admin'){
-                loadAdminData();
-            }
-        }
-
-        // Add Admin Tab
-        function addAdminTab(){
-
-            const nav =
-                document.querySelector('nav .flex');
-
-            const btn =
-                document.createElement('button');
-
-            btn.id = 'tab-admin';
-
-            btn.className =
-                'flex flex-col items-center text-slate-400';
-
-            btn.onclick = () => switchTab('admin');
-
-            btn.innerHTML = `
-                <span>⚙️</span>
-                <span class="text-xs mt-1 font-semibold">
-                    Admin
-                </span>
-            `;
-
-            nav.appendChild(btn);
-        }
-
-        // Videos
-        function loadVideos(){
-
-            const container =
-                document.getElementById('videos-container');
-
-            container.innerHTML = '';
-
-            videos.forEach(video => {
-
-                const watched =
-                    adProgress[video.unique_id] || 0;
-
-                const unlocked =
-                    watched >= video.ads_required;
-
-                const percent =
-                    Math.min(
-                        (watched / video.ads_required) * 100,
-                        100
-                    );
-
-                container.innerHTML += `
-                    <div class="glass rounded-3xl overflow-hidden">
-
-                        <div class="relative aspect-video">
-
-                            <img
-                                src="${video.image_url}"
-                                class="w-full h-full object-cover"
-                            >
-
-                            <div class="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
-
-                        </div>
-
-                        <div class="p-4">
-
-                            <h3 class="font-bold text-base">
-                                ${video.title}
-                            </h3>
-
-                            ${
-                                unlocked
-                                ?
-                                `
-                                <button
-                                    onclick="playVideo('${video.video_url}')"
-                                    class="w-full mt-3 bg-green-600 py-3 rounded-2xl font-bold text-sm"
-                                >
-                                    ▶ Watch Video
-                                </button>
-                                `
-                                :
-                                `
-                                <div class="mt-3">
-
-                                    <div class="flex justify-between text-xs text-slate-400 mb-1">
-
-                                        <span>
-                                            Unlock ${watched}/${video.ads_required}
-                                        </span>
-
-                                        <span>
-                                            ${Math.round(percent)}%
-                                        </span>
-
-                                    </div>
-
-                                    <div class="bg-slate-700 h-2 rounded-full overflow-hidden">
-
-                                        <div
-                                            class="bg-gradient-to-r from-purple-500 to-blue-500 h-2 progress-fill"
-                                            style="width:${percent}%"
-                                        ></div>
-
-                                    </div>
-
-                                    <button
-                                        onclick="watchAd('${video.unique_id}',${video.ads_required})"
-                                        class="w-full mt-3 bg-purple-600 py-3 rounded-2xl font-bold text-sm"
-                                    >
-                                        Watch Ad
-                                    </button>
-
-                                </div>
-                                `
-                            }
-
-                            <button
-                                onclick="copyShareLink('${video.unique_id}')"
-                                class="mt-3 text-xs text-slate-400"
-                            >
-                                🔗 Share
-                            </button>
-
-                        </div>
-
-                    </div>
-                `;
-            });
-        }
-
-        // Tasks
-        function loadTasks(){
-
-            const container =
-                document.getElementById('tasks-container');
-
-            container.innerHTML = '';
-
-            tasks.forEach(task => {
-
-                container.innerHTML += `
-                    <div class="glass rounded-2xl p-4 flex items-center gap-4">
-
-                        <img
-                            src="${task.image_url}"
-                            class="w-16 h-16 rounded-xl object-cover"
-                        >
-
-                        <div class="flex-1">
-
-                            <h3 class="font-semibold text-sm">
-                                ${task.title}
-                            </h3>
-
-                            <a
-                                href="${task.redirect_url}"
-                                target="_blank"
-                                class="inline-block mt-2 bg-blue-600 px-4 py-2 rounded-xl text-xs font-bold"
-                            >
-                                Start Task
-                            </a>
-
-                        </div>
-
-                    </div>
-                `;
-            });
-        }
-
-        // Watch Ad
-        function watchAd(uniqueId, adsRequired){
-
-            // PaidAdz Interstitial
-            show_11007747({
-                type:'inApp',
-                inAppSettings:{
-                    frequency:2,
-                    capping:0.1,
-                    interval:30,
-                    timeout:5,
-                    everyPage:false
-                }
-            });
-
-            showToast('Watching Ad...');
-
+        let currentAdUniqueTarget = null;
+        let currentAdRequiredTarget = null;
+
+        // --- Initialization ---
+        window.onload = async () => {
+            if (tg) tg.expand();
+            if (tg) tg.ready();
+
+            setupUI();
+            await checkDeepLink();
+            
             setTimeout(() => {
+                document.getElementById('loading-screen').classList.add('hide');
+                loadInitialData();
+            }, 2200);
+        };
 
-                adProgress[uniqueId] =
-                    (adProgress[uniqueId] || 0) + 1;
+        function setupUI() {
+            if (user) {
+                document.getElementById('header-username').innerText = user.first_name;
+                const avatarHtml = `<img src="https://ui-avatars.com/api/?name=${user.first_name}&background=7C3AED&color=fff" class="w-full h-full rounded-full" alt="">`;
+                document.getElementById('header-avatar').innerHTML = avatarHtml;
+                document.getElementById('header-avatar').classList.remove('hidden');
+                
+                const loadAvatar = document.getElementById('load-avatar');
+                loadAvatar.src = `https://ui-avatars.com/api/?name=${user.first_name}&background=7C3AED&color=fff`;
+                loadAvatar.classList.remove('hidden');
 
-                localStorage.setItem(
-                    'adProgress',
-                    JSON.stringify(adProgress)
-                );
-
-                if(
-                    adProgress[uniqueId]
-                    >=
-                    adsRequired
-                ){
-
-                    showToast('🎉 Video Unlocked!');
-
-                }else{
-
-                    showToast('Ad Watched!');
+                if (ADMIN_IDS.includes(user.id)) {
+                    isAdmin = true;
+                    document.getElementById('admin-badge').classList.remove('hidden');
+                    document.getElementById('page-admin').classList.remove('hidden');
+                    addAdminTab();
                 }
-
-                loadVideos();
-
-            },5000);
+            }
         }
 
-        // Play Video
-        function playVideo(url){
-
-            tg.openLink(url);
+        function addAdminTab() {
+            const nav = document.querySelector('nav .flex');
+            const adminBtn = document.createElement('button');
+            adminBtn.id = 'tab-admin';
+            adminBtn.onclick = () => switchTab('admin');
+            adminBtn.className = 'flex flex-col items-center text-slate-400';
+            adminBtn.innerHTML = `
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+                <span class="text-xs mt-1 font-semibold">Admin</span>`;
+            nav.appendChild(adminBtn);
         }
 
-        // Share
-        function copyShareLink(uniqueId){
+        // --- Routing & Tabs ---
+        function switchTab(tab) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('nav button').forEach(b => {
+                b.classList.remove('text-purple-400', 'text-blue-400');
+                b.classList.add('text-slate-400');
+            });
 
-            const link =
-                `https://t.me/PaidAdzBot?startapp=video_${uniqueId}`;
+            document.getElementById(`page-${tab}`).classList.add('active');
+            const tabBtn = document.getElementById(`tab-${tab}`);
+            tabBtn.classList.remove('text-slate-400');
+            tabBtn.classList.add(tab === 'tasks' ? 'text-blue-400' : 'text-purple-400');
 
+            if (tab === 'admin') loadAdminData();
+        }
+
+        // --- Deep Linking ---
+        async function checkDeepLink() {
+            const params = new URLSearchParams(window.location.search);
+            const startApp = params.get('tgWebAppStartParam');
+            if (startApp && startApp.startsWith('video_')) {
+                const uniqueId = startApp.replace('video_', '');
+                const res = await fetch(`/api/video/${uniqueId}`);
+                if (res.ok) {
+                    const video = await res.json();
+                    showDeepLinkVideo(video);
+                }
+            }
+        }
+
+        function showDeepLinkVideo(video) {
+            const container = document.getElementById('deep-link-content');
+            const watched = adProgress[video.unique_id] || 0;
+            const isUnlocked = watched >= video.ads_required;
+            
+            container.innerHTML = `
+                <div class="glass rounded-3xl overflow-hidden">
+                    <div class="relative aspect-video bg-slate-800">
+                        <img src="${video.image_url}" class="w-full h-full object-cover opacity-50" alt="">
+                        ${isUnlocked ? `
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <video controls class="w-full h-full object-cover"><source src="${video.video_url}" type="video/mp4"></video>
+                            </div>
+                        ` : `
+                            <div class="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
+                                <p class="text-white font-semibold mb-2">Watch ${video.ads_required - watched} more ads to unlock</p>
+                                <button onclick="watchAd('${video.unique_id}', ${video.ads_required})" class="bg-purple-600 px-6 py-2 rounded-full text-sm font-bold">Watch Ad</button>
+                            </div>
+                        `}
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-lg">${video.title}</h3>
+                        <button onclick="copyShareLink('${video.unique_id}')" class="mt-3 text-xs text-slate-400 flex items-center gap-1 bg-slate-800 px-3 py-1.5 rounded-full">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
+                            Share Link
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.getElementById('deep-link-container').classList.add('active');
+            document.getElementById('deep-link-container').classList.remove('hidden');
+        }
+
+        function closeDeepLink() {
+            document.getElementById('deep-link-container').classList.remove('active');
+            document.getElementById('deep-link-container').classList.add('hidden');
+            switchTab('videos');
+        }
+
+        function copyShareLink(uniqueId) {
+            const link = `https://t.me/viralvideobot/video?startapp=video_${uniqueId}`; 
             navigator.clipboard.writeText(link);
-
             showToast('Link Copied!');
         }
 
-        // Toast
-        function showToast(text){
-
-            const toast =
-                document.getElementById('toast');
-
-            toast.innerText = text;
-
-            toast.classList.add('show');
-
-            setTimeout(() => {
-
-                toast.classList.remove('show');
-
-            },2000);
+        // --- API Calls ---
+        async function loadInitialData() {
+            await loadVideos();
+            await loadTasks();
         }
 
-        // Modal
-        function openVideoModal(){
-
-            document
-                .getElementById('video-modal')
-                .classList
-                .add('show');
-        }
-
-        function closeVideoModal(){
-
-            document
-                .getElementById('video-modal')
-                .classList
-                .remove('show');
-        }
-
-        // Save Video
-        function saveVideo(){
-
-            const title =
-                document.getElementById('vm-title').value;
-
-            const img =
-                document.getElementById('vm-img').value;
-
-            const url =
-                document.getElementById('vm-url').value;
-
-            const ads =
-                parseInt(
-                    document.getElementById('vm-ads').value
-                );
-
-            if(!title || !url || !ads){
-
-                showToast('Fill all fields');
-
-                return;
-            }
-
-            videos.unshift({
-                id:Date.now(),
-                unique_id:Math.random()
-                    .toString(36)
-                    .substring(2,8),
-                title,
-                image_url:img,
-                video_url:url,
-                ads_required:ads
-            });
-
-            closeVideoModal();
-
-            loadVideos();
-
-            loadAdminData();
-
-            showToast('Video Added!');
-        }
-
-        // Admin Data
-        function loadAdminData(){
-
-            const container =
-                document.getElementById('admin-videos-list');
-
+        async function loadVideos() {
+            const res = await fetch('/api/videos');
+            const videos = await res.json();
+            const container = document.getElementById('videos-container');
             container.innerHTML = '';
 
-            videos.forEach(video => {
+            videos.forEach(v => {
+                const watched = adProgress[v.unique_id] || 0;
+                const isUnlocked = watched >= v.ads_required;
+                const progressPercent = Math.min((watched / v.ads_required) * 100, 100);
 
                 container.innerHTML += `
-                    <div class="glass rounded-2xl p-4 flex justify-between items-center">
-
-                        <div class="truncate w-2/3 text-sm">
-                            ${video.title}
+                    <div class="glass rounded-3xl overflow-hidden transition-all duration-300 hover:scale-[1.02]">
+                        <div class="relative aspect-video">
+                            <img src="${v.image_url}" class="w-full h-full object-cover" alt="${v.title}">
+                            <div class="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent"></div>
+                            ${isUnlocked ? `
+                                <button onclick="playVideo('${v.video_url}')" class="absolute bottom-4 right-4 bg-white/20 backdrop-blur-md p-3 rounded-full">
+                                    <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
+                                </button>
+                            ` : ''}
                         </div>
-
-                        <button
-                            onclick="deleteVideo(${video.id})"
-                            class="text-red-400 text-xs font-bold"
-                        >
-                            Delete
-                        </button>
-
+                        <div class="p-4">
+                            <h3 class="font-bold text-base text-white">${v.title}</h3>
+                            <div class="mt-3">
+                                ${isUnlocked ? `
+                                    <div class="flex items-center gap-2 text-green-400 text-xs font-semibold">
+                                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                                        Unlocked
+                                    </div>
+                                ` : `
+                                    <div class="flex justify-between text-xs text-slate-400 mb-1">
+                                        <span>Unlock ${watched}/${v.ads_required} Ads</span>
+                                        <span>${Math.round(progressPercent)}%</span>
+                                    </div>
+                                    <div class="w-full bg-slate-700 rounded-full h-1.5">
+                                        <div class="bg-gradient-to-r from-purple-500 to-blue-500 h-1.5 rounded-full progress-fill" style="width: ${progressPercent}%"></div>
+                                    </div>
+                                    <button onclick="watchAd('${v.unique_id}', ${v.ads_required})" class="mt-2 w-full bg-purple-600/20 text-purple-400 py-2 rounded-xl text-xs font-bold border border-purple-500/30 hover:bg-purple-600/40 transition">
+                                        Watch Ad to Unlock
+                                    </button>
+                                `}
+                            </div>
+                            <button onclick="copyShareLink('${v.unique_id}')" class="mt-3 text-xs text-slate-500 flex items-center gap-1 hover:text-slate-300 transition">
+                                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
+                                Share
+                            </button>
+                        </div>
                     </div>
                 `;
             });
         }
 
-        // Delete
-        function deleteVideo(id){
+        async function loadTasks() {
+            const res = await fetch('/api/tasks');
+            const tasks = await res.json();
+            const container = document.getElementById('tasks-container');
+            container.innerHTML = '';
 
-            videos =
-                videos.filter(v => v.id !== id);
-
-            loadVideos();
-
-            loadAdminData();
-
-            showToast('Deleted');
+            tasks.forEach(t => {
+                container.innerHTML += `
+                    <div class="glass rounded-2xl p-4 flex items-center gap-4 transition-all duration-300 hover:bg-white/5">
+                        <img src="${t.image_url}" class="w-16 h-16 rounded-xl object-cover" alt="${t.title}">
+                        <div class="flex-1">
+                            <h3 class="font-semibold text-sm text-white">${t.title}</h3>
+                            <a href="${t.redirect_url}" target="_blank" class="inline-block mt-2 bg-blue-600/20 text-blue-400 px-4 py-1.5 rounded-full text-xs font-bold border border-blue-500/30 hover:bg-blue-600/40 transition">Start Task</a>
+                        </div>
+                    </div>
+                `;
+            });
         }
 
-    </script>
+        // --- Ad & User Actions ---
+        function watchAd(uniqueId, adsRequired) {
+            currentAdUniqueTarget = uniqueId;
+            currentAdRequiredTarget = adsRequired;
+            showToast('Loading Ad...');
+            
+            // Attempt to show Hilltopads In-App Interstitial
+            if (typeof show_11007747 === 'function') {
+                show_11007747({
+                    type: 'inApp',
+                    inAppSettings: {
+                        frequency: 2,
+                        capping: 0.1,
+                        interval: 30,
+                        timeout: 5,
+                        everyPage: false
+                    }
+                });
+            } else {
+                // If script fails to load entirely
+                showFakeAdSimulation();
+            }
+        }
 
+        // Called when Hilltop ad closes successfully
+        function rewardUserAfterAd() {
+            if (!currentAdUniqueTarget) return;
+            adProgress[currentAdUniqueTarget] = (adProgress[currentAdUniqueTarget] || 0) + 1;
+            localStorage.setItem('adProgress', JSON.stringify(adProgress));
+            
+            if (adProgress[currentAdUniqueTarget] >= currentAdRequiredTarget) {
+                showToast('🎉 Video Unlocked!');
+            } else {
+                showToast('Ad watched! Progress updated.');
+            }
+            
+            loadVideos(); 
+            checkDeepLink(); 
+            
+            currentAdUniqueTarget = null;
+            currentAdRequiredTarget = null;
+        }
+
+        // Fallback Fake Ad Simulation (If ad blocker blocks Hilltopads)
+        function showFakeAdSimulation() {
+            const overlay = document.getElementById('fake-ad-overlay');
+            const closeBtn = document.getElementById('fake-ad-close');
+            overlay.classList.add('show');
+            closeBtn.style.display = 'none';
+
+            setTimeout(() => {
+                closeBtn.style.display = 'block';
+            }, 5000); // Wait 5 seconds before allowing close
+
+            closeBtn.onclick = function() {
+                overlay.classList.remove('show');
+                rewardUserAfterAd();
+            };
+        }
+
+        function playVideo(url) {
+            window.open(url, '_blank');
+        }
+
+        // --- Admin Panel Logic ---
+        async function loadAdminData() {
+            if (!isAdmin) return;
+            
+            const vRes = await fetch('/api/videos');
+            const videos = await vRes.json();
+            const vList = document.getElementById('admin-videos-list');
+            vList.innerHTML = '';
+            videos.forEach(v => {
+                vList.innerHTML += `
+                    <div class="glass rounded-xl p-3 flex justify-between items-center">
+                        <span class="text-sm truncate w-2/3">${v.title}</span>
+                        <div class="flex gap-2">
+                            <button onclick="openVideoModal('${v.id}')" class="text-blue-400 text-xs font-bold">Edit</button>
+                            <button onclick="deleteVideo('${v.id}')" class="text-red-400 text-xs font-bold">Del</button>
+                        </div>
+                    </div>
+                `;
+            });
+
+            const tRes = await fetch('/api/tasks');
+            const tasks = await tRes.json();
+            const tList = document.getElementById('admin-tasks-list');
+            tList.innerHTML = '';
+            tasks.forEach(t => {
+                tList.innerHTML += `
+                    <div class="glass rounded-xl p-3 flex justify-between items-center">
+                        <span class="text-sm truncate w-2/3">${t.title}</span>
+                        <div class="flex gap-2">
+                            <button onclick="deleteTask('${t.id}')" class="text-red-400 text-xs font-bold">Del</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        function showAdminTab(tab) {
+            document.getElementById('admin-videos-section').classList.toggle('hidden', tab !== 'videos');
+            document.getElementById('admin-tasks-section').classList.toggle('hidden', tab !== 'tasks');
+            document.getElementById('admin-tab-videos').className = `flex-1 py-2 rounded-xl text-sm font-semibold ${tab === 'videos' ? 'bg-purple-600' : 'bg-slate-700'}`;
+            document.getElementById('admin-tab-tasks').className = `flex-1 py-2 rounded-xl text-sm font-semibold ${tab === 'tasks' ? 'bg-blue-600' : 'bg-slate-700'}`;
+        }
+
+        function openVideoModal(id = '') {
+            document.getElementById('video-modal').classList.add('show');
+            document.getElementById('vm-id').value = id;
+            document.getElementById('video-modal-title').innerText = id ? 'Edit Video' : 'Add Video';
+            if(!id) ['vm-title', 'vm-img', 'vm-url', 'vm-ads'].forEach(id => document.getElementById(id).value = '');
+        }
+
+        function closeVideoModal() { document.getElementById('video-modal').classList.remove('show'); }
+
+        async function saveVideo() {
+            const id = document.getElementById('vm-id').value;
+            const payload = {
+                title: document.getElementById('vm-title').value,
+                image_url: document.getElementById('vm-img').value,
+                video_url: document.getElementById('vm-url').value,
+                ads_required: parseInt(document.getElementById('vm-ads').value)
+            };
+
+            if (!payload.title || !payload.ads_required) return showToast('Please fill required fields');
+
+            const url = id ? `/api/videos/${id}` : '/api/videos';
+            const method = id ? 'PUT' : 'POST';
+            
+            await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            closeVideoModal();
+            showToast('Video Saved!');
+            loadAdminData();
+            loadVideos();
+        }
+
+        async function deleteVideo(id) {
+            if(confirm('Delete this video?')) {
+                await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+                showToast('Video Deleted');
+                loadAdminData();
+                loadVideos();
+            }
+        }
+
+        function openTaskModal() {
+            document.getElementById('task-modal').classList.add('show');
+            ['tm-title', 'tm-img', 'tm-url'].forEach(id => document.getElementById(id).value = '');
+        }
+
+        function closeTaskModal() { document.getElementById('task-modal').classList.remove('show'); }
+
+        async function saveTask() {
+            const payload = {
+                title: document.getElementById('tm-title').value,
+                image_url: document.getElementById('tm-img').value,
+                redirect_url: document.getElementById('tm-url').value
+            };
+            if (!payload.title) return showToast('Please fill required fields');
+
+            await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            closeTaskModal();
+            showToast('Task Added!');
+            loadAdminData();
+            loadTasks();
+        }
+
+        async function deleteTask(id) {
+            if(confirm('Delete this task?')) {
+                await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+                showToast('Task Deleted');
+                loadAdminData();
+                loadTasks();
+            }
+        }
+
+        // --- Helpers ---
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.innerText = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2000);
+        }
+    </script>
 </body>
 </html>
