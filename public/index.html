@@ -126,15 +126,41 @@
         <div id="page-admin" class="page hidden">
             <h2 class="text-xl font-bold mb-4">Admin Dashboard</h2>
             
-            <div class="flex gap-2 mb-6">
-                <button onclick="showAdminTab('videos')" id="admin-tab-videos" class="flex-1 py-2 rounded-xl text-sm font-semibold bg-purple-600">Videos</button>
-                <button onclick="showAdminTab('tasks')" id="admin-tab-tasks" class="flex-1 py-2 rounded-xl text-sm font-semibold bg-slate-700">Tasks</button>
+            <!-- Admin Tabs -->
+            <div class="flex gap-2 mb-6 overflow-x-auto pb-2">
+                <button onclick="showAdminTab('dashboard')" id="admin-tab-dashboard" class="px-4 py-2 rounded-xl text-xs font-semibold bg-purple-600 whitespace-nowrap">Dashboard</button>
+                <button onclick="showAdminTab('videos')" id="admin-tab-videos" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-700 whitespace-nowrap">Videos</button>
+                <button onclick="showAdminTab('tasks')" id="admin-tab-tasks" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-700 whitespace-nowrap">Tasks</button>
             </div>
 
-            <div id="admin-videos-section">
+            <!-- Dashboard Section -->
+            <div id="admin-dashboard-section">
+                <div class="grid grid-cols-2 gap-3 mb-6">
+                    <div class="glass rounded-2xl p-4">
+                        <p class="text-xs text-slate-400">Total Videos</p>
+                        <h3 id="stat-videos" class="text-2xl font-bold mt-1">0</h3>
+                    </div>
+                    <div class="glass rounded-2xl p-4">
+                        <p class="text-xs text-slate-400">Total Tasks</p>
+                        <h3 id="stat-tasks" class="text-2xl font-bold mt-1">0</h3>
+                    </div>
+                    <div class="glass rounded-2xl p-4 col-span-2">
+                        <p class="text-xs text-slate-400">Total Ad Views (Global)</p>
+                        <h3 id="stat-ads" class="text-2xl font-bold mt-1">0</h3>
+                    </div>
+                </div>
+                <div class="glass rounded-2xl p-4 text-center text-slate-400 text-sm">
+                    <p>Manage your content using the tabs above.</p>
+                </div>
+            </div>
+
+            <!-- Videos Section -->
+            <div id="admin-videos-section" class="hidden">
                 <button onclick="openVideoModal()" class="w-full glass rounded-2xl p-3 mb-4 text-center text-purple-400 font-semibold border-dashed border-2 border-purple-400">+ Add Video</button>
                 <div id="admin-videos-list" class="space-y-3"></div>
             </div>
+
+            <!-- Tasks Section -->
             <div id="admin-tasks-section" class="hidden">
                 <button onclick="openTaskModal()" class="w-full glass rounded-2xl p-3 mb-4 text-center text-blue-400 font-semibold border-dashed border-2 border-blue-400">+ Add Task</button>
                 <div id="admin-tasks-list" class="space-y-3"></div>
@@ -159,7 +185,7 @@
     <!-- Modals & Overlays -->
     <div id="toast" class="toast">Success!</div>
     
-    <!-- Fake Ad Simulation Overlay (Fallback) -->
+    <!-- Fake Ad Simulation Overlay -->
     <div id="fake-ad-overlay" class="ad-overlay">
         <div class="text-center p-6">
             <p class="text-sm text-gray-400 mb-2">Sponsored Ad</p>
@@ -169,6 +195,7 @@
         </div>
     </div>
 
+    <!-- Video Modal -->
     <div id="video-modal" class="modal-overlay">
         <div class="glass rounded-3xl p-6 w-full max-w-sm mx-4">
             <h3 class="text-lg font-bold mb-4" id="video-modal-title">Add Video</h3>
@@ -186,9 +213,10 @@
         </div>
     </div>
 
+    <!-- Task Modal -->
     <div id="task-modal" class="modal-overlay">
         <div class="glass rounded-3xl p-6 w-full max-w-sm mx-4">
-            <h3 class="text-lg font-bold mb-4">Add Task</h3>
+            <h3 class="text-lg font-bold mb-4" id="task-modal-title">Add Task</h3>
             <input type="hidden" id="tm-id">
             <div class="space-y-3">
                 <input id="tm-title" class="w-full bg-slate-800/50 p-3 rounded-xl text-sm outline-none" placeholder="Task Title">
@@ -206,7 +234,7 @@
         // --- Telegram WebApp Integration ---
         const tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
         let user = tg ? tg.initDataUnsafe.user : null;
-        const ADMIN_IDS = [6040791692]; // Your Telegram ID
+        const ADMIN_IDS = [6040791692]; 
         let isAdmin = false;
 
         // Local storage for ad progress
@@ -215,10 +243,8 @@
         // Ad Callback function required by Hilltopads
         window.adCallback_11007747 = function(isAdShown) {
             if (isAdShown) {
-                console.log("Hilltop Ad shown successfully");
                 rewardUserAfterAd();
             } else {
-                console.log("Hilltop Ad not available, showing fallback simulation");
                 showFakeAdSimulation();
             }
         };
@@ -360,6 +386,11 @@
             const container = document.getElementById('videos-container');
             container.innerHTML = '';
 
+            if(videos.length === 0) {
+                container.innerHTML = '<p class="text-center text-slate-500 mt-10">No videos available.</p>';
+                return;
+            }
+
             videos.forEach(v => {
                 const watched = adProgress[v.unique_id] || 0;
                 const isUnlocked = watched >= v.ads_required;
@@ -413,6 +444,11 @@
             const container = document.getElementById('tasks-container');
             container.innerHTML = '';
 
+            if(tasks.length === 0) {
+                container.innerHTML = '<p class="text-center text-slate-500 mt-10">No tasks available.</p>';
+                return;
+            }
+
             tasks.forEach(t => {
                 container.innerHTML += `
                     <div class="glass rounded-2xl p-4 flex items-center gap-4 transition-all duration-300 hover:bg-white/5">
@@ -456,6 +492,9 @@
             adProgress[currentAdUniqueTarget] = (adProgress[currentAdUniqueTarget] || 0) + 1;
             localStorage.setItem('adProgress', JSON.stringify(adProgress));
             
+            // Notify backend about the ad view for global stats
+            fetch('/api/stats/ad-view', { method: 'POST' });
+
             if (adProgress[currentAdUniqueTarget] >= currentAdRequiredTarget) {
                 showToast('🎉 Video Unlocked!');
             } else {
@@ -493,7 +532,15 @@
         // --- Admin Panel Logic ---
         async function loadAdminData() {
             if (!isAdmin) return;
+
+            // Load Stats
+            const statsRes = await fetch('/api/stats');
+            const stats = await statsRes.json();
+            document.getElementById('stat-videos').innerText = stats.total_videos;
+            document.getElementById('stat-tasks').innerText = stats.total_tasks;
+            document.getElementById('stat-ads').innerText = stats.total_ad_views;
             
+            // Load Admin Videos List
             const vRes = await fetch('/api/videos');
             const videos = await vRes.json();
             const vList = document.getElementById('admin-videos-list');
@@ -501,15 +548,19 @@
             videos.forEach(v => {
                 vList.innerHTML += `
                     <div class="glass rounded-xl p-3 flex justify-between items-center">
-                        <span class="text-sm truncate w-2/3">${v.title}</span>
-                        <div class="flex gap-2">
-                            <button onclick="openVideoModal('${v.id}')" class="text-blue-400 text-xs font-bold">Edit</button>
-                            <button onclick="deleteVideo('${v.id}')" class="text-red-400 text-xs font-bold">Del</button>
+                        <div class="flex-1 truncate mr-2">
+                            <p class="text-sm font-medium truncate">${v.title}</p>
+                            <p class="text-xs text-slate-500 truncate">ID: ${v.unique_id}</p>
+                        </div>
+                        <div class="flex gap-2 shrink-0">
+                            <button onclick="openVideoModal('${v.id}')" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded">Edit</button>
+                            <button onclick="deleteVideo('${v.id}')" class="text-red-400 text-xs font-bold bg-red-500/10 px-2 py-1 rounded">Del</button>
                         </div>
                     </div>
                 `;
             });
 
+            // Load Admin Tasks List
             const tRes = await fetch('/api/tasks');
             const tasks = await tRes.json();
             const tList = document.getElementById('admin-tasks-list');
@@ -517,9 +568,13 @@
             tasks.forEach(t => {
                 tList.innerHTML += `
                     <div class="glass rounded-xl p-3 flex justify-between items-center">
-                        <span class="text-sm truncate w-2/3">${t.title}</span>
-                        <div class="flex gap-2">
-                            <button onclick="deleteTask('${t.id}')" class="text-red-400 text-xs font-bold">Del</button>
+                        <div class="flex-1 truncate mr-2">
+                            <p class="text-sm font-medium truncate">${t.title}</p>
+                            <p class="text-xs text-slate-500 truncate">${t.redirect_url}</p>
+                        </div>
+                        <div class="flex gap-2 shrink-0">
+                            <button onclick="openTaskModal('${t.id}')" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded">Edit</button>
+                            <button onclick="deleteTask('${t.id}')" class="text-red-400 text-xs font-bold bg-red-500/10 px-2 py-1 rounded">Del</button>
                         </div>
                     </div>
                 `;
@@ -527,10 +582,13 @@
         }
 
         function showAdminTab(tab) {
+            document.getElementById('admin-dashboard-section').classList.toggle('hidden', tab !== 'dashboard');
             document.getElementById('admin-videos-section').classList.toggle('hidden', tab !== 'videos');
             document.getElementById('admin-tasks-section').classList.toggle('hidden', tab !== 'tasks');
-            document.getElementById('admin-tab-videos').className = `flex-1 py-2 rounded-xl text-sm font-semibold ${tab === 'videos' ? 'bg-purple-600' : 'bg-slate-700'}`;
-            document.getElementById('admin-tab-tasks').className = `flex-1 py-2 rounded-xl text-sm font-semibold ${tab === 'tasks' ? 'bg-blue-600' : 'bg-slate-700'}`;
+            
+            document.getElementById('admin-tab-dashboard').className = `px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap ${tab === 'dashboard' ? 'bg-purple-600' : 'bg-slate-700'}`;
+            document.getElementById('admin-tab-videos').className = `px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap ${tab === 'videos' ? 'bg-purple-600' : 'bg-slate-700'}`;
+            document.getElementById('admin-tab-tasks').className = `px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap ${tab === 'tasks' ? 'bg-blue-600' : 'bg-slate-700'}`;
         }
 
         function openVideoModal(id = '') {
@@ -572,14 +630,17 @@
             }
         }
 
-        function openTaskModal() {
+        function openTaskModal(id = '') {
             document.getElementById('task-modal').classList.add('show');
-            ['tm-title', 'tm-img', 'tm-url'].forEach(id => document.getElementById(id).value = '');
+            document.getElementById('tm-id').value = id;
+            document.getElementById('task-modal-title').innerText = id ? 'Edit Task' : 'Add Task';
+            if(!id) ['tm-title', 'tm-img', 'tm-url'].forEach(id => document.getElementById(id).value = '');
         }
 
         function closeTaskModal() { document.getElementById('task-modal').classList.remove('show'); }
 
         async function saveTask() {
+            const id = document.getElementById('tm-id').value;
             const payload = {
                 title: document.getElementById('tm-title').value,
                 image_url: document.getElementById('tm-img').value,
@@ -587,9 +648,12 @@
             };
             if (!payload.title) return showToast('Please fill required fields');
 
-            await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            const url = id ? `/api/tasks/${id}` : '/api/tasks';
+            const method = id ? 'PUT' : 'POST';
+
+            await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
             closeTaskModal();
-            showToast('Task Added!');
+            showToast('Task Saved!');
             loadAdminData();
             loadTasks();
         }
