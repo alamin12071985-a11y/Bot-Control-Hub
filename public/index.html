@@ -550,10 +550,10 @@
                     <div class="glass rounded-xl p-3 flex justify-between items-center">
                         <div class="flex-1 truncate mr-2">
                             <p class="text-sm font-medium truncate">${v.title}</p>
-                            <p class="text-xs text-slate-500 truncate">ID: ${v.unique_id}</p>
+                            <p class="text-xs text-slate-500 truncate">ID: ${v.unique_id} | Ads: ${v.ads_required}</p>
                         </div>
                         <div class="flex gap-2 shrink-0">
-                            <button onclick="openVideoModal('${v.id}')" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded">Edit</button>
+                            <button onclick="editVideo('${v.id}', '${v.title}', '${v.image_url}', '${v.video_url}', ${v.ads_required})" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded">Edit</button>
                             <button onclick="deleteVideo('${v.id}')" class="text-red-400 text-xs font-bold bg-red-500/10 px-2 py-1 rounded">Del</button>
                         </div>
                     </div>
@@ -573,7 +573,7 @@
                             <p class="text-xs text-slate-500 truncate">${t.redirect_url}</p>
                         </div>
                         <div class="flex gap-2 shrink-0">
-                            <button onclick="openTaskModal('${t.id}')" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded">Edit</button>
+                            <button onclick="editTask('${t.id}', '${t.title}', '${t.image_url}', '${t.redirect_url}')" class="text-blue-400 text-xs font-bold bg-blue-500/10 px-2 py-1 rounded">Edit</button>
                             <button onclick="deleteTask('${t.id}')" class="text-red-400 text-xs font-bold bg-red-500/10 px-2 py-1 rounded">Del</button>
                         </div>
                     </div>
@@ -591,11 +591,21 @@
             document.getElementById('admin-tab-tasks').className = `px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap ${tab === 'tasks' ? 'bg-blue-600' : 'bg-slate-700'}`;
         }
 
-        function openVideoModal(id = '') {
+        function openVideoModal() {
             document.getElementById('video-modal').classList.add('show');
+            document.getElementById('vm-id').value = '';
+            document.getElementById('video-modal-title').innerText = 'Add Video';
+            ['vm-title', 'vm-img', 'vm-url', 'vm-ads'].forEach(id => document.getElementById(id).value = '');
+        }
+
+        function editVideo(id, title, img, url, ads) {
+            document.getElementById('video-modal').classList.add('show');
+            document.getElementById('video-modal-title').innerText = 'Edit Video';
             document.getElementById('vm-id').value = id;
-            document.getElementById('video-modal-title').innerText = id ? 'Edit Video' : 'Add Video';
-            if(!id) ['vm-title', 'vm-img', 'vm-url', 'vm-ads'].forEach(id => document.getElementById(id).value = '');
+            document.getElementById('vm-title').value = title;
+            document.getElementById('vm-img').value = img;
+            document.getElementById('vm-url').value = url;
+            document.getElementById('vm-ads').value = ads;
         }
 
         function closeVideoModal() { document.getElementById('video-modal').classList.remove('show'); }
@@ -630,11 +640,20 @@
             }
         }
 
-        function openTaskModal(id = '') {
+        function openTaskModal() {
             document.getElementById('task-modal').classList.add('show');
+            document.getElementById('task-modal-title').innerText = 'Add Task';
+            document.getElementById('tm-id').value = '';
+            ['tm-title', 'tm-img', 'tm-url'].forEach(id => document.getElementById(id).value = '');
+        }
+
+        function editTask(id, title, img, url) {
+            document.getElementById('task-modal').classList.add('show');
+            document.getElementById('task-modal-title').innerText = 'Edit Task';
             document.getElementById('tm-id').value = id;
-            document.getElementById('task-modal-title').innerText = id ? 'Edit Task' : 'Add Task';
-            if(!id) ['tm-title', 'tm-img', 'tm-url'].forEach(id => document.getElementById(id).value = '');
+            document.getElementById('tm-title').value = title;
+            document.getElementById('tm-img').value = img;
+            document.getElementById('tm-url').value = url;
         }
 
         function closeTaskModal() { document.getElementById('task-modal').classList.remove('show'); }
