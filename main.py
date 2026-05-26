@@ -1,204 +1,138 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import Optional
 import json
 import os
-import httpx
-import logging
-from fastapi import FastAPI, Request, HTTPException
-from aiogram import Bot, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# =========================
-# CONFIG
-# =========================
-API_KEY = os.getenv("API_KEY", "mysecretkey")
-BASE_URL = os.getenv("BASE_URL", "https://your-app-name.onrender.com")
-DB_FILE = "bots.json"
+import uuid
 
 app = FastAPI()
 
-logging.basicConfig(level=logging.INFO)
+# Serve static files
+app.mount("/public", StaticFiles(directory="public"), name="public")
 
-# =========================
-# DATABASE (JSON)
-# =========================
+DB_FILE = "database.json"
+ADMIN_IDS = [6040791692] # Replace with your Telegram User ID
+
+# --- Database Helpers ---
 def load_db():
     if not os.path.exists(DB_FILE):
-        return {}
-    with open(DB_FILE, "r") as f:
+        initial_data = {
+            "videos": [
+                {
+                    "id": "1",
+                    "unique_id": "viral-vid-001",
+                    "title": "Cinematic Ocean Waves",
+                    "image_url": "https://images.unsplash.com/photo-1505118380757-91f5f5632de0?w=600&q=80",
+                    "video_url": "https://www.w3schools.com/html/mov_bbb.mp4",
+                    "ads_required": 5
+                },
+                {
+                    "id": "2",
+                    "unique_id": "viral-vid-002",
+                    "title": "City Night Lights",
+                    "image_url": "https://images.unsplash.com/photo-1514565131-fce0801e5785?w=600&q=80",
+                    "video_url": "https://www.w3schools.com/html/movie.mp4",
+                    "ads_required": 3
+                }
+            ],
+            "tasks": [
+                {
+                    "id": "1",
+                    "title": "Join Our Channel",
+                    "image_url": "https://images.unsplash.com/photo-1611602660688-2d1480f9a7bb?w=600&q=80",
+                    "redirect_url": "https://t.me/yourchannel"
+                }
+            ]
+        }
+        with open(DB_FILE, 'w') as f:
+            json.dump(initial_data, f, indent=4)
+        return initial_data
+    with open(DB_FILE, 'r') as f:
         return json.load(f)
 
-
 def save_db(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    with open(DB_FILE, 'w') as f:
+        json.dump(data, f, indent=4)
 
+# --- Models ---
+class VideoSchema(BaseModel):
+    title: str
+    image_url: str
+    video_url: str
+    ads_required: int
 
-# =========================
-# SECURITY
-# =========================
-def check_api_key(request: Request):
-    key = request.headers.get("X-API-KEY")
-    if key != API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+class TaskSchema(BaseModel):
+    title: str
+    image_url: str
+    redirect_url: str
 
+# --- Routes ---
+@app.get("/")
+async def read_root():
+    return FileResponse('public/index.html')
 
-# =========================
-# TELEGRAM VALIDATION
-# =========================
-async def validate_token(token):
-    url = f"https://api.telegram.org/bot{token}/getMe"
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url)
-        return r.status_code == 200 and r.json().get("ok")
+@app.get("/api/admin/check/{user_id}")
+async def check_admin(user_id: int):
+    return {"is_admin": user_id in ADMIN_IDS}
 
+@app.get("/api/videos")
+async def get_videos():
+    return load_db().get("videos", [])
 
-# =========================
-# SET WEBHOOK
-# =========================
-async def set_webhook(token):
-    webhook_url = f"{BASE_URL}/webhook/{token}"
-    url = f"https://api.telegram.org/bot{token}/setWebhook"
-
-    async with httpx.AsyncClient() as client:
-        await client.post(url, json={"url": webhook_url})
-
-
-# =========================
-# BUTTON BUILDER
-# =========================
-def build_keyboard(buttons):
-    kb = InlineKeyboardMarkup()
-    for b in buttons:
-        kb.add(InlineKeyboardButton(text=b["name"], url=b["url"]))
-    return kb
-
-
-# =========================
-# CREDIT SYSTEM
-# =========================
-def apply_credit(text):
-    return text + "\n\n━━━━━━━━━━━━━━━\n🤖 Powered by: @YourBotUsername"
-
-
-# =========================
-# CREATE BOT
-# =========================
-@app.post("/api/create-bot")
-async def create_bot(request: Request):
-    check_api_key(request)
-    data = await request.json()
-
-    token = data.get("token")
-    text = data.get("text", "")
-    image = data.get("image")
-    buttons = data.get("buttons", [])
-
-    if not token:
-        raise HTTPException(400, "Token required")
-
-    valid = await validate_token(token)
-    if not valid:
-        raise HTTPException(400, "Invalid bot token")
-
+@app.post("/api/videos")
+async def add_video(video: VideoSchema):
     db = load_db()
-    db[token] = {
-        "text": text,
-        "image": image,
-        "buttons": buttons
+    new_vid = {
+        "id": str(uuid.uuid4()),
+        "unique_id": f"vid-{uuid.uuid4().hex[:8]}",
+        **video.dict()
     }
+    db["videos"].append(new_vid)
     save_db(db)
+    return new_vid
 
-    await set_webhook(token)
-
-    return {
-        "status": "success",
-        "message": "Bot created and running"
-    }
-
-
-# =========================
-# STATUS
-# =========================
-@app.get("/api/status")
-async def status(token: str, request: Request):
-    check_api_key(request)
+@app.put("/api/videos/{video_id}")
+async def update_video(video_id: str, video: VideoSchema):
     db = load_db()
+    for i, v in enumerate(db["videos"]):
+        if v["id"] == video_id:
+            db["videos"][i] = {**v, **video.dict()}
+            save_db(db)
+            return db["videos"][i]
+    raise HTTPException(status_code=404, detail="Video not found")
 
-    if token in db:
-        return {"status": "running"}
-    return {"status": "not found"}
-
-
-# =========================
-# DELETE BOT
-# =========================
-@app.post("/api/delete-bot")
-async def delete_bot(request: Request):
-    check_api_key(request)
-    data = await request.json()
-    token = data.get("token")
-
+@app.delete("/api/videos/{video_id}")
+async def delete_video(video_id: str):
     db = load_db()
-
-    if token not in db:
-        raise HTTPException(404, "Bot not found")
-
-    del db[token]
+    db["videos"] = [v for v in db["videos"] if v["id"] != video_id]
     save_db(db)
+    return {"status": "success"}
 
-    # remove webhook
-    async with httpx.AsyncClient() as client:
-        await client.post(f"https://api.telegram.org/bot{token}/deleteWebhook")
+@app.get("/api/tasks")
+async def get_tasks():
+    return load_db().get("tasks", [])
 
-    return {"status": "deleted"}
-
-
-# =========================
-# WEBHOOK HANDLER
-# =========================
-@app.post("/webhook/{token}")
-async def webhook(token: str, request: Request):
+@app.post("/api/tasks")
+async def add_task(task: TaskSchema):
     db = load_db()
+    new_task = {"id": str(uuid.uuid4()), **task.dict()}
+    db["tasks"].append(new_task)
+    save_db(db)
+    return new_task
 
-    if token not in db:
-        return {"ok": False}
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str):
+    db = load_db()
+    db["tasks"] = [t for t in db["tasks"] if t["id"] != task_id]
+    save_db(db)
+    return {"status": "success"}
 
-    data = db[token]
-
-    bot = Bot(token=token)
-
-    update = types.Update(**await request.json())
-
-    if update.message and update.message.text == "/start":
-        chat_id = update.message.chat.id
-
-        text = apply_credit(data["text"])
-        keyboard = build_keyboard(data["buttons"])
-
-        try:
-            if data["image"] and data["image"] != "none":
-                await bot.send_photo(
-                    chat_id,
-                    photo=data["image"],
-                    caption=text,
-                    reply_markup=keyboard
-                )
-            else:
-                await bot.send_message(
-                    chat_id,
-                    text=text,
-                    reply_markup=keyboard
-                )
-        except Exception as e:
-            logging.error(str(e))
-
-    return {"ok": True}
-
-
-# =========================
-# AUTO LOAD (optional)
-# =========================
-@app.on_event("startup")
-async def startup():
-    if not os.path.exists(DB_FILE):
-        save_db({})
-    logging.info("Server started...")
+@app.get("/api/video/{unique_id}")
+async def get_video_by_uid(unique_id: str):
+    db = load_db()
+    for v in db["videos"]:
+        if v["unique_id"] == unique_id:
+            return v
+    raise HTTPException(status_code=404, detail="Video not found")
