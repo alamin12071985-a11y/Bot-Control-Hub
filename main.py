@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional
 import json
 import os
 import uuid
@@ -12,8 +11,9 @@ app = FastAPI()
 # Serve static files
 app.mount("/public", StaticFiles(directory="public"), name="public")
 
-DB_FILE = "database.json"
-ADMIN_IDS = [6040791692] # Replace with your Telegram User ID
+# Vercel allows writing only in /tmp directory
+DB_FILE = "/tmp/database.json"
+ADMIN_IDS = [6040791692] # Your Telegram User ID
 
 # --- Database Helpers ---
 def load_db():
@@ -27,14 +27,6 @@ def load_db():
                     "image_url": "https://images.unsplash.com/photo-1505118380757-91f5f5632de0?w=600&q=80",
                     "video_url": "https://www.w3schools.com/html/mov_bbb.mp4",
                     "ads_required": 5
-                },
-                {
-                    "id": "2",
-                    "unique_id": "viral-vid-002",
-                    "title": "City Night Lights",
-                    "image_url": "https://images.unsplash.com/photo-1514565131-fce0801e5785?w=600&q=80",
-                    "video_url": "https://www.w3schools.com/html/movie.mp4",
-                    "ads_required": 3
                 }
             ],
             "tasks": [
@@ -42,9 +34,12 @@ def load_db():
                     "id": "1",
                     "title": "Join Our Channel",
                     "image_url": "https://images.unsplash.com/photo-1611602660688-2d1480f9a7bb?w=600&q=80",
-                    "redirect_url": "https://t.me/yourchannel"
+                    "redirect_url": "https://t.me/viralvideobot"
                 }
-            ]
+            ],
+            "stats": {
+                "total_ad_views": 0
+            }
         }
         with open(DB_FILE, 'w') as f:
             json.dump(initial_data, f, indent=4)
@@ -76,6 +71,23 @@ async def read_root():
 @app.get("/api/admin/check/{user_id}")
 async def check_admin(user_id: int):
     return {"is_admin": user_id in ADMIN_IDS}
+
+@app.get("/api/stats")
+async def get_stats():
+    db = load_db()
+    return {
+        "total_videos": len(db.get("videos", [])),
+        "total_tasks": len(db.get("tasks", [])),
+        "total_ad_views": db.get("stats", {}).get("total_ad_views", 0)
+    }
+
+@app.post("/api/stats/ad-view")
+async def increment_ad_view():
+    db = load_db()
+    if "stats" not in db: db["stats"] = {"total_ad_views": 0}
+    db["stats"]["total_ad_views"] += 1
+    save_db(db)
+    return {"status": "success"}
 
 @app.get("/api/videos")
 async def get_videos():
@@ -121,6 +133,16 @@ async def add_task(task: TaskSchema):
     db["tasks"].append(new_task)
     save_db(db)
     return new_task
+
+@app.put("/api/tasks/{task_id}")
+async def update_task(task_id: str, task: TaskSchema):
+    db = load_db()
+    for i, t in enumerate(db["tasks"]):
+        if t["id"] == task_id:
+            db["tasks"][i] = {**t, **task.dict()}
+            save_db(db)
+            return db["tasks"][i]
+    raise HTTPException(status_code=404, detail="Task not found")
 
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str):
