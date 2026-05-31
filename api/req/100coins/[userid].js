@@ -1,78 +1,81 @@
-// api/req/100coins/[userid].js
-// Vercel Serverless Function
-// Called by Mini App when user converts 100 coins
-// URL: https://your-app.vercel.app/API/req/100coins/USER_ID
+// ════════════════════════════════════════════════════
+// 📁 api/req/100coins/[userid].js
+// Vercel Serverless API → Telebot Creator
+// Route: GET /api/req/100coins/:userid
+// ════════════════════════════════════════════════════
+
+// ✅ Replace with your Telebot Creator Bot Username
+const BOT_USERNAME = "lagasmmbot"; // ← শুধু এইটা পরিবর্তন করো
+
+const TELEBOT_API  = `https://api.telebot.pro/${BOT_USERNAME}/runCommand`;
+
+// Optional: Secret key for security (same key Mini App te dite hobe)
+const SECRET_KEY   = "my_secret_key_2025"; // ← optional security
 
 export default async function handler(req, res) {
 
-  /* ── CORS ── */
+  // ── CORS Headers ──
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
-  /* ── CONFIG (set in Vercel Environment Variables) ── */
-  const BOT_TOKEN = process.env.BOT_TOKEN;   // Your Telegram Bot Token
-  const API_KEY   = process.env.API_KEY;     // Optional secret key for security
-  const COINS     = 100;
-
-  /* ── GET user_id from URL ── */
+  // ── Get user_id from URL ──
   const { userid } = req.query;
 
+  // ── Validate user_id ──
   if (!userid || isNaN(userid)) {
     return res.status(400).json({
-      ok: false,
-      error: 'Invalid or missing user_id',
+      success: false,
+      error: "Invalid user_id"
     });
   }
 
-  /* ── Optional API Key check ── */
-  if (API_KEY) {
-    const provided = req.headers['x-api-key'] || req.query.key;
-    if (provided !== API_KEY) {
-      return res.status(401).json({ ok: false, error: 'Unauthorized' });
-    }
+  // ── Optional secret check ──
+  const secret = req.query.secret || req.headers['x-secret'];
+  if (secret && secret !== SECRET_KEY) {
+    return res.status(403).json({
+      success: false,
+      error: "Unauthorized"
+    });
   }
 
-  if (!BOT_TOKEN) {
-    return res.status(500).json({ ok: false, error: 'BOT_TOKEN not configured' });
-  }
-
-  /* ── Send /addcoins command trigger to Bot ── */
   try {
-    const telegramUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-
-    // Send a message to the user that triggers /addcoins in your TPY bot
-    const payload = {
-      chat_id:    userid,
-      text:       `/addcoins ${userid}`,
-      parse_mode: 'HTML',
-    };
-
-    const tgRes  = await fetch(telegramUrl, {
-      method:  'POST',
+    // ── Call Telebot Creator API ──
+    const response = await fetch(TELEBOT_API, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
+      body: JSON.stringify({
+        command: "/addcoins_api",   // ← Telebot Creator command name
+        user_id: parseInt(userid),
+        params:  "100"              // ← amount to add
+      })
     });
 
-    const tgData = await tgRes.json();
+    const data = await response.json();
 
-    if (!tgData.ok) {
-      throw new Error(tgData.description || 'Telegram API error');
+    if (response.ok) {
+      return res.status(200).json({
+        success: true,
+        message: "100 coins added to user " + userid,
+        telebot_response: data
+      });
+    } else {
+      return res.status(500).json({
+        success: false,
+        error: "Telebot API error",
+        details: data
+      });
     }
-
-    return res.status(200).json({
-      ok:          true,
-      user_id:     userid,
-      coins_added: COINS,
-      message:     'Signal sent to bot successfully',
-    });
 
   } catch (err) {
     return res.status(500).json({
-      ok:    false,
-      error: err.message || 'Internal server error',
+      success: false,
+      error: "Server error",
+      details: err.message
     });
   }
 }
