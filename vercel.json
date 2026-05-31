@@ -2,44 +2,22 @@
   "version": 2,
   "builds": [
     {
-      "src": "ads/index.html",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "main.js",
-      "use": "@vercel/static"
-    },
-    {
-      "src": "api/req/100coins/[userid].js",
+      "src": "api/**/*.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     {
-      "src": "/miniapp",
-      "dest": "/ads/index.html"
+      "src": "/api/req/100coins/([^/]+)",
+      "dest": "/api/req/100coins/[userid].js"
     },
     {
-      "src": "/ads/(.*)",
-      "dest": "/ads/$1"
-    },
-    {
-      "src": "/main.js",
-      "dest": "/main.js"
-    },
-    {
-      "src": "/API/req/100coins/([^/]+)",
-      "dest": "/api/req/100coins/[userid].js?userid=$1"
-    }
-  ],
-  "headers": [
-    {
-      "source": "/API/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, x-api-key" }
-      ]
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
   ]
 }
