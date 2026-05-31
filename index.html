@@ -7,8 +7,8 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Baloo+Da+2:wght@500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"/>
 
-<!-- ✅ Monetag Ad SDK -->
-<script src="//thubanoa.com/1?z=8891010" async></script>
+<!-- ✅ libtl.com Ad SDK -->
+<script src='//libtl.com/sdk.js' data-zone='11007747' data-sdk='show_11007747'></script>
 
 <style>
   :root {
@@ -436,7 +436,7 @@
 const COINS_PER_AD    = 10;   // coins per ad watch
 const CONVERT_AT      = 100;  // coins needed to convert
 const COOLDOWN_SEC    = 15;   // seconds between ads
-const VERCEL_BASE_URL = "https://myadspage.vercel.app"; // ← your Vercel URL
+const VERCEL_BASE_URL = "https://botwelcomeset.vercel.app"; // ← your Vercel URL
 
 // ══════════════════════════════════════════
 // 🌐 Telegram WebApp Init
@@ -544,9 +544,9 @@ function watchAd() {
   label.textContent = 'Loading...';
   document.getElementById('watch-caption').textContent = 'Ad is loading...';
 
-  // ✅ Show Monetag Interstitial Ad
+  // ✅ Show libtl.com Ad
   try {
-    show_8891010();  // ← Replace with your Monetag zone function
+    show_11007747();  // ← libtl.com SDK zone function
   } catch(e) {
     // Ad failed silently, still reward (for testing)
   }
